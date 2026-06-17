@@ -17,6 +17,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: 'AI 伴侶 - 你的專屬虛擬伴侶',
   description: '與 AI 伴侶聊天、生成專屬寫真照片',
+  icons: {
+    icon: '/icon.svg',
+  },
 }
 
 export default function RootLayout({
