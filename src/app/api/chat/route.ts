@@ -2,9 +2,9 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase'
 import { chatCompletion } from '@/lib/nvidia'
 import { buildSystemPrompt, parseDrawPrompt, stripDrawPrompt } from '@/lib/draw-prompt'
-import { generateImage } from '@/lib/agnes'
+import { createPendingImage } from '@/lib/storage'
 import { getCharacter } from '@/lib/services/character-service'
-import { saveImageRecord, uploadToStorage } from '@/lib/storage'
+import { processPendingImageGeneration } from '@/lib/image-generator'
 import type { BodyParams } from '@/types/database'
 
 /** Build Chinese body description from structured body params */
@@ -58,50 +58,35 @@ export async function POST(request: Request) {
     const drawPromptText = parseDrawPrompt(assistantMessage)
     const cleanMessage = stripDrawPrompt(assistantMessage)
 
-    let tempImageUrl: string | null = null
-    let sceneDescription: string | null = null
+    let pendingImageId: string | null = null
 
     if (drawPromptText) {
-      sceneDescription = drawPromptText.split(',').slice(0, 3).join(',').trim()
+      const sceneDescription = drawPromptText.split(',').slice(0, 3).join(',').trim()
 
-      // Generate image via Agnes AI (returns base64 string)
-      // Pass reference images for visual consistency (avatar + outfit)
-      const refImages: string[] = []
-      if (character.avatar_url) refImages.push(character.avatar_url)
-      const outfitUrl = character.body_params?.outfit_ref_url
-      if (outfitUrl && typeof outfitUrl === 'string') refImages.push(outfitUrl)
-
-      const b64 = await generateImage(drawPromptText, {
-        size: '1024x1536',
-        referenceImages: refImages.length > 0 ? refImages : undefined,
-      })
-
-      // Convert base64 to buffer + upload to Supabase Storage
-      const buf = Buffer.from(b64, 'base64')
-      tempImageUrl = await uploadToStorage(
-        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
-        user.id,
-        character_id
-      )
-
-      // Save record for gallery
-      await saveImageRecord(
+      // Create a pending image record — do NOT wait for generation
+      pendingImageId = await createPendingImage(
         user.id,
         character_id,
-        tempImageUrl,
         drawPromptText,
         sceneDescription
+      )
+
+      // Fire off background generation (does not block the response)
+      processPendingImageGeneration(
+        pendingImageId,
+        character_id,
+        user.id,
+        drawPromptText
       )
     }
 
     return NextResponse.json({
       text: cleanMessage,
-      tempImageUrl,
-      hasImage: !!tempImageUrl,
-      sceneDescription,
+      pendingImageId,
+      hasPendingImage: !!pendingImageId,
     })
   } catch (error: any) {
-    console.error('chat-with-image error:', error)
+    console.error('chat error:', error)
     return NextResponse.json(
       { error: error.message || 'Internal server error' },
       { status: 500 }

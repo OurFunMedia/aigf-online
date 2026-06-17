@@ -22,6 +22,14 @@ function mockQuery(returns: any) {
   return chain
 }
 
+function expectImageQuery(mockFrom: any, userId: string) {
+  expect(mockFrom).toHaveBeenCalledWith('images')
+  const chain = mockFrom.mock.results[0]?.value
+  expect(chain.select).toHaveBeenCalledWith('*')
+  expect(chain.eq).toHaveBeenCalledWith('user_id', userId)
+  expect(chain.eq).toHaveBeenCalledWith('status', 'completed')
+}
+
 describe('getImages', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -38,7 +46,7 @@ describe('getImages', () => {
     const result = await getImages('u1')
 
     expect(result).toEqual(fakeImages)
-    expect(mockFrom).toHaveBeenCalledWith('images')
+    expectImageQuery(mockFrom, 'u1')
   })
 
   it('returns empty array when no images', async () => {

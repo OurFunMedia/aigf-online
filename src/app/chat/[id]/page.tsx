@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import {
   ArrowLeft,
@@ -17,7 +17,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { Character, Chat, ChatMessage } from '@/types/database'
+import { createBrowserSupabaseClient } from '@/lib/supabase-client'
+import type { Character, Chat, ChatMessage, Image as ImageRecord } from '@/types/database'
 
 export default function ChatPage() {
   const params = useParams()
@@ -89,6 +90,50 @@ export default function ChatPage() {
     init()
   }, [characterId, router])
 
+  // ── Supabase Realtime: listen for completed images ──
+  useEffect(() => {
+    if (!characterId) return
+
+    const supabase = createBrowserSupabaseClient()
+
+    // Subscribe to changes on images table for this character
+    const channel = supabase
+      .channel('chat-image-updates')
+      .on<ImageRecord>(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'images',
+          filter: `character_id=eq.${characterId}`,
+        },
+        (payload) => {
+          const image = payload.new as ImageRecord
+          if (image.status === 'completed' || image.status === 'failed') {
+            // Find the message that has this pending_image_id and update it
+            setMessages((prev) =>
+              prev.map((msg) => {
+                if (msg.pending_image_id === image.id) {
+                  return {
+                    ...msg,
+                    image_url: image.storage_url || undefined,
+                    pending_image_id: image.status === 'completed' ? undefined : msg.pending_image_id,
+                  }
+                }
+                return msg
+              })
+            )
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [characterId])
+
+  // ── Send message ──
   async function handleSend() {
     const content = input.trim()
     if (!content || sending) return
@@ -122,8 +167,8 @@ export default function ChatPage() {
       const savedChat = await saveRes.json()
       setChat(savedChat)
 
-      // 2. Generate assistant response
-      const res = await fetch('/api/chat-with-image', {
+      // 2. Generate assistant response (async — image generation runs in background)
+      const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -140,13 +185,16 @@ export default function ChatPage() {
         throw new Error(data.error || `伺服器錯誤 (${res.status})`)
       }
 
-      // 3. Save assistant response to DB
+      // 3. Build assistant message — image may come later via Realtime
       const assistantMsg: ChatMessage = {
         role: 'assistant',
         content: data.text,
         timestamp: new Date().toISOString(),
-        image_url: data.tempImageUrl ?? undefined,
+        image_url: undefined,
+        pending_image_id: data.pendingImageId ?? undefined,
       }
+
+      // 4. Save assistant message to DB
       const patchRes = await fetch('/api/chats', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -284,7 +332,7 @@ export default function ChatPage() {
           <div className="space-y-4">
             {messages.map((msg, i) => (
               <div
-                key={i}
+                key={msg.timestamp ?? i}
                 className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
               >
                 {/* Avatar */}
@@ -317,7 +365,7 @@ export default function ChatPage() {
                       {msg.content}
                     </div>
 
-                    {/* Image attachment */}
+                    {/* Image attachment — completed */}
                     {msg.image_url && (
                       <a
                         href={msg.image_url}
@@ -333,6 +381,14 @@ export default function ChatPage() {
                           onError={() => bottomRef.current?.scrollIntoView?.()}
                         />
                       </a>
+                    )}
+
+                    {/* Pending state — image being generated */}
+                    {msg.pending_image_id && !msg.image_url && (
+                      <div className="flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-800/50 px-4 py-3 text-xs text-zinc-400">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin text-pink-400" />
+                        <span>正在生成照片⋯</span>
+                      </div>
                     )}
                   </div>
 

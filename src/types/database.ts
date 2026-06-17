@@ -31,6 +31,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   image_url?: string
+  /** ID of the pending image record, set when generation is in progress */
+  pending_image_id?: string
   timestamp: string
 }
 
@@ -42,6 +44,8 @@ export interface Chat {
   updated_at: string
 }
 
+export type ImageStatus = 'pending' | 'processing' | 'completed' | 'failed'
+
 export interface Image {
   id: string
   character_id: string
@@ -49,6 +53,8 @@ export interface Image {
   prompt: string
   storage_url: string
   scene_description: string | null
+  status: ImageStatus
+  error_message: string | null
   created_at: string
 }
 
@@ -60,6 +66,13 @@ export interface UserProfile {
 }
 
 // API response types
+export interface ChatResponse {
+  text: string
+  /** Non-null when the assistant triggered image generation (now async) */
+  pendingImageId: string | null
+  hasPendingImage: boolean
+}
+
 export interface ChatWithImageResponse {
   text: string
   tempImageUrl: string | null

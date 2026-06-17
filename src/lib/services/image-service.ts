@@ -19,6 +19,7 @@ export async function getImages(
     .from('images')
     .select('*')
     .eq('user_id', userId)
+    .eq('status', 'completed')
     .order('created_at', { ascending: order === 'asc' })
 
   if (error) throw new Error(error.message)

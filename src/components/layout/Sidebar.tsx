@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter, useParams } from 'next/navigation'
-import { ImageIcon, Plus, MessageCircle, Heart } from 'lucide-react'
+import { ImageIcon, MessageCircle, Heart } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -55,14 +55,7 @@ export function Sidebar({ open = true, onClose }: SidebarProps) {
       <div className="flex h-full flex-col">
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <span className="text-sm font-medium text-muted-foreground">我的角色</span>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => router.push('/chat')}
-          >
-            <Plus className="h-4 w-4 text-muted-foreground" />
-          </Button>
+
         </div>
 
         <ScrollArea className="flex-1 px-2 py-2">

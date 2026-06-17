@@ -15,7 +15,8 @@ import {
 import { AppLayout } from '@/components/layout/AppLayout'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import type { Image } from '@/types/database'
+import { createBrowserSupabaseClient } from '@/lib/supabase-client'
+import type { Image, Image as ImageRecord } from '@/types/database'
 
 export default function GalleryPage() {
   const router = useRouter()
@@ -46,6 +47,37 @@ export default function GalleryPage() {
   useEffect(() => {
     fetchImages(sortOrder)
   }, [sortOrder, fetchImages])
+
+  // Realtime: listen for newly completed images
+  useEffect(() => {
+    const supabase = createBrowserSupabaseClient()
+    const channel = supabase
+      .channel('gallery-image-updates')
+      .on<ImageRecord>(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'images',
+          filter: `status=eq.completed`,
+        },
+        (payload) => {
+          const image = payload.new as ImageRecord
+          if (image.status === 'completed') {
+            // Check if already in list (avoid dupes)
+            setImages((prev) => {
+              if (prev.some((img) => img.id === image.id)) return prev
+              return [image, ...prev]
+            })
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }, [])
 
   const totalCount = images.length
 

@@ -16,6 +16,16 @@ vi.mock('@/components/layout/AppLayout', () => ({
   ),
 }))
 
+// Mock supabase client to prevent env var requirement
+vi.mock('@/lib/supabase-client', () => ({
+  createBrowserSupabaseClient: () => ({
+    channel: () => ({
+      on: () => ({ subscribe: () => ({ unsubscribe: vi.fn() }) }),
+    }),
+    removeChannel: vi.fn(),
+  }),
+}))
+
 // Mock all lucide-react icons
 vi.mock('lucide-react', () => {
   const MockIcon = (props: any) => {
