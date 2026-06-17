@@ -19,10 +19,10 @@ interface NavbarProps {
 
 export function Navbar({ onMenuClick }: NavbarProps) {
   const router = useRouter()
-  const supabase = createBrowserSupabaseClient()
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
 
   const handleLogout = async () => {
+    const supabase = createBrowserSupabaseClient()
     await supabase.auth.signOut()
     router.push('/login')
     router.refresh()
