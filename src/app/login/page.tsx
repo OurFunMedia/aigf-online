@@ -6,9 +6,9 @@ import { createBrowserSupabaseClient } from '@/lib/supabase-client'
 export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const supabase = createBrowserSupabaseClient()
 
   const handleGoogleLogin = async () => {
+    const supabase = createBrowserSupabaseClient()
     setLoading(true)
     setError(null)
 
