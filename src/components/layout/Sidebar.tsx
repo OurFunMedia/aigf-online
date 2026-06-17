@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter, useParams } from 'next/navigation'
-import { Plus, MessageCircle, Heart } from 'lucide-react'
+import { ImageIcon, Plus, MessageCircle, Heart } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -123,6 +123,18 @@ export function Sidebar({ open = true, onClose }: SidebarProps) {
             </div>
           )}
         </ScrollArea>
+
+        {/* Gallery entry */}
+        <button
+          onClick={() => {
+            router.push('/gallery')
+            onClose?.()
+          }}
+          className="flex w-full items-center gap-3 border-t border-border px-4 py-3 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <ImageIcon className="h-5 w-5" />
+          <span>寫真畫廊</span>
+        </button>
       </div>
     </aside>
   )
