@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Heart, LogOut, Menu, User } from 'lucide-react'
+import { Heart, Home, LogOut, Menu, User } from 'lucide-react'
 import { createBrowserSupabaseClient } from '@/lib/supabase-client'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -38,6 +38,14 @@ export function Navbar({ onMenuClick }: NavbarProps) {
           <Heart className="h-6 w-6 text-pink-500" />
           <span className="text-lg font-semibold text-foreground">AI 伴侶</span>
         </div>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={() => router.push('/')}
+        >
+          <Home className="h-5 w-5 text-muted-foreground" />
+        </Button>
       </div>
 
       <div className="flex items-center gap-2">
