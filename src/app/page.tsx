@@ -1,65 +1,138 @@
-import Image from "next/image";
+'use client'
 
-export default function Home() {
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { Heart, Plus, Loader2 } from 'lucide-react'
+import { AppLayout } from '@/components/layout/AppLayout'
+import { CharacterCard } from '@/components/character/CharacterCard'
+import { CreateCharacterDialog } from '@/components/character/CreateCharacterDialog'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import type { Character } from '@/types/database'
+
+export default function HomePage() {
+  const router = useRouter()
+  const [characters, setCharacters] = useState<Character[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [dialogOpen, setDialogOpen] = useState(false)
+
+  async function fetchCharacters() {
+    try {
+      const res = await fetch('/api/characters')
+      if (!res.ok) {
+        if (res.status === 401) {
+          router.push('/login')
+          return
+        }
+        throw new Error('Failed to load characters')
+      }
+      const data = await res.json()
+      setCharacters(data)
+    } catch (err: any) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchCharacters()
+  }, [router])
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <AppLayout>
+      <div className="mx-auto max-w-6xl px-4 py-8">
+        {/* Header */}
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-white">你的 AI 伴侶</h1>
+            <p className="mt-1 text-sm text-zinc-400">
+              選擇一個角色開始聊天，或創建新的伴侶
+            </p>
+          </div>
+          <Button
+            variant="default"
+            className="gap-2 bg-pink-600 text-white hover:bg-pink-700"
+            onClick={() => setDialogOpen(true)}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            <Plus className="h-4 w-4" />
+            創建角色
+          </Button>
         </div>
-      </main>
-    </div>
-  );
+
+        {/* Loading state */}
+        {loading && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div
+                key={i}
+                className="flex flex-col items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-6"
+              >
+                <Skeleton className="h-20 w-20 rounded-full" />
+                <Skeleton className="h-5 w-24" />
+                <Skeleton className="h-10 w-full" />
+                <Skeleton className="h-4 w-32" />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Error state */}
+        {error && !loading && (
+          <div className="flex flex-col items-center justify-center py-20">
+            <p className="text-red-400">載入失敗：{error}</p>
+            <Button
+              variant="outline"
+              className="mt-4"
+              onClick={() => window.location.reload()}
+            >
+              重新載入
+            </Button>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!loading && !error && characters.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-zinc-800">
+              <Heart className="h-8 w-8 text-pink-400" />
+            </div>
+            <h2 className="text-xl font-semibold text-white">還沒有角色</h2>
+            <p className="mt-2 max-w-sm text-sm text-zinc-400">
+              創建你的第一個 AI 伴侶，開始專屬的聊天與寫真體驗
+            </p>
+            <Button
+              variant="default"
+              className="mt-6 gap-2 bg-pink-600 text-white hover:bg-pink-700"
+              onClick={() => setDialogOpen(true)}
+            >
+              <Plus className="h-4 w-4" />
+              創建角色
+            </Button>
+          </div>
+        )}
+
+        {/* Character grid */}
+        {!loading && !error && characters.length > 0 && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {characters.map((character) => (
+              <CharacterCard
+                key={character.id}
+                character={character}
+                onClick={() => router.push(`/chat/${character.id}`)}
+                onEdit={() => router.push(`/settings/${character.id}`)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <CreateCharacterDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onCreated={fetchCharacters}
+      />
+    </AppLayout>
+  )
 }
