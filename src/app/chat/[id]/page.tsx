@@ -278,6 +278,18 @@ export default function ChatPage() {
             }
             if (data.d) {
               pendingImageId = data.pid ?? null
+              // Use the authoritative clean text from the server (tag already stripped)
+              if (data.text) {
+                fullText = data.text
+                setMessages((prev) => {
+                  const updated = [...prev]
+                  const last = updated[updated.length - 1]
+                  if (last.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, content: fullText }
+                  }
+                  return updated
+                })
+              }
             }
           } catch {
             // skip malformed JSON lines

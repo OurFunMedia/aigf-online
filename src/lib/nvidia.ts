@@ -119,30 +119,22 @@ export async function chatCompletionStream(
               const delta = parsed?.choices?.[0]?.delta?.content
               if (!delta) continue
 
+              accumulated += delta
+
               if (drawPromptMode) {
                 // Still buffering the DRAW_PROMPT tag — discard
-                accumulated += delta
                 continue
               }
 
-              // Check if this delta contains the start of [DRAW_PROMPT
-              const tagStartIdx = delta.indexOf('[DRAW_PROMPT:')
-              if (tagStartIdx !== -1) {
-                // Forward text before the tag
-                const beforeTag = delta.slice(0, tagStartIdx)
-                if (beforeTag) {
-                  accumulated += beforeTag
-                  sendToken(beforeTag)
-                }
-                // Everything from tag onwards goes to buffer (discarded)
-                const inTag = delta.slice(tagStartIdx)
-                accumulated += inTag
+              // Check if the full tag marker [DRAW_PROMPT: has formed in accumulated
+              // (It may be split across multiple SSE chunks, e.g. "[D" + "RAW" + "_PRO" + ...)
+              if (accumulated.includes('[DRAW_PROMPT:')) {
                 drawPromptMode = true
-              } else {
-                // Normal token — forward to client
-                accumulated += delta
-                sendToken(delta)
+                continue
               }
+
+              // Normal token — forward to client
+              sendToken(delta)
             } catch {
               // skip malformed JSON lines
             }
