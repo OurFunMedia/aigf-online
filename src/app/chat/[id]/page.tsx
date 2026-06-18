@@ -75,12 +75,47 @@ export default function ChatPage() {
         }
 
         const chatData = await chatRes.json()
-        if (chatData?.messages) {
-          setChat(chatData)
-          setMessages(chatData.messages)
-        } else {
-          setMessages([])
+        const resolvedMessages = chatData?.messages ?? []
+
+        // Resolve any pending images right after loading messages
+        // (handles page refresh where image was already generated)
+        if (resolvedMessages.length > 0) {
+          const pendingIds: string[] = []
+          for (const m of resolvedMessages) {
+            if (m.pending_image_id) pendingIds.push(m.pending_image_id)
+          }
+          if (pendingIds.length > 0) {
+            const supabase = createBrowserSupabaseClient()
+            const { data: imagesData } = await supabase
+              .from('images')
+              .select('id, status, storage_url')
+              .in('id', pendingIds)
+
+            if (imagesData?.length) {
+              const imageMap = Object.fromEntries(
+                imagesData.map((img: any) => [img.id, img])
+              )
+              for (let i = 0; i < resolvedMessages.length; i++) {
+                const msg = resolvedMessages[i]
+                if (!msg.pending_image_id) continue
+                const img = imageMap[msg.pending_image_id]
+                if (!img) continue
+                if (img.status === 'completed') {
+                  resolvedMessages[i] = {
+                    ...msg,
+                    image_url: img.storage_url || undefined,
+                    pending_image_id: undefined,
+                  }
+                } else if (img.status === 'failed') {
+                  resolvedMessages[i] = { ...msg, pending_image_id: undefined }
+                }
+              }
+            }
+          }
         }
+
+        setChat(chatData)
+        setMessages(resolvedMessages)
       } catch (err) {
         console.error('Chat init error:', err)
       } finally {
@@ -89,46 +124,6 @@ export default function ChatPage() {
     }
     init()
   }, [characterId, router])
-
-  // ── Resolve pending images on mount (handles page refresh) ──
-  useEffect(() => {
-    if (!messages.length || !characterId) return
-
-    const pendingIds = messages
-      .filter((m) => m.pending_image_id)
-      .map((m) => m.pending_image_id)
-    if (!pendingIds.length) return
-
-    const supabase = createBrowserSupabaseClient()
-    supabase
-      .from('images')
-      .select('id, status, storage_url')
-      .in('id', pendingIds)
-      .then(({ data, error }) => {
-        if (error || !data?.length) return
-        const imageMap = Object.fromEntries(data.map((img) => [img.id, img]))
-        setMessages((prev) =>
-          prev.map((msg) => {
-            if (!msg.pending_image_id) return msg
-            const img = imageMap[msg.pending_image_id]
-            if (!img) return msg
-            if (img.status === 'completed') {
-              return {
-                ...msg,
-                image_url: img.storage_url || undefined,
-                pending_image_id: undefined,
-              }
-            }
-            if (img.status === 'failed') {
-              return { ...msg, pending_image_id: undefined }
-            }
-            return msg
-          })
-        )
-      })
-    // Only run once on mount — intentional missing deps
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [characterId])
 
   // ── Supabase Realtime: listen for completed images ──
   useEffect(() => {
