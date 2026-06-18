@@ -22,7 +22,7 @@ const PROVIDERS: Record<string, ProviderConfig> = {
   },
 }
 
-const DEFAULT_PROVIDER = 'agnes'
+const DEFAULT_PROVIDER = 'nvidia'
 
 function getActiveProvider(): ProviderConfig {
   const choice = process.env.CHAT_PROVIDER ?? DEFAULT_PROVIDER
