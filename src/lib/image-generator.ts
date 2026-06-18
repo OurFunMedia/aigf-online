@@ -18,13 +18,15 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
     } catch (err: any) {
       if (attempt >= maxRetries) throw err
 
-      // Only retry on network errors or 5xx
+      // Only retry on network errors, timeouts, or 5xx
       const msg = String(err.message ?? '')
       const isTransient =
         msg.includes('fetch failed') ||
         msg.includes('ETIMEDOUT') ||
         msg.includes('ECONNREFUSED') ||
         msg.includes('ECONNRESET') ||
+        msg.includes('TimeoutError') ||
+        msg.includes('The operation was aborted') ||
         msg.includes('503') ||
         msg.includes('502') ||
         msg.includes('500')
