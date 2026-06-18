@@ -7,6 +7,10 @@ import { getCharacter } from '@/lib/services/character-service'
 import { processPendingImageGeneration } from '@/lib/image-generator'
 import type { BodyParams } from '@/types/database'
 
+// Edge Runtime — Vercel free-tier Edge has ~30s timeout vs Serverless 10s.
+// Used with non-streaming JSON response (no ReadableStream wrapping issues).
+export const runtime = 'edge'
+
 /** Build Chinese body description from structured body params */
 function buildBodyDescription(bp: BodyParams): string {
   const bustLabels: Record<string, string> = { flat: '平坦', medium: '中等', noticeable: '豐滿', large: '豐滿' }
@@ -48,17 +52,15 @@ export async function POST(request: Request) {
       character.body_params ? buildBodyDescription(character.body_params) : undefined
     )
 
-    // Call NVIDIA non-streaming with a short server-side timeout (8s).
-    // Vercel free-tier Serverless has 10s maxDuration.
-    // NVIDIA seems slower from Vercel's network, so use 9.5s server-side timeout.
+    // Edge Runtime has ~30s timeout — give NVIDIA up to 25s to respond.
     const fullText = await chatCompletion(
       [
         { role: 'system', content: systemPrompt },
         ...messages,
       ],
       {
-        max_tokens: 256,        // keep response short for speed
-        timeoutMs: 9_500,       // server-side timeout (max before 10s Vercel limit)
+        max_tokens: 256,
+        timeoutMs: 25_000,
       }
     )
 
