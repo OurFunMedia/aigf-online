@@ -16,6 +16,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
+  let t0 = 0
+
   try {
     const {
       messages,
@@ -39,7 +41,8 @@ export async function POST(request: Request) {
       body_description
     )
 
-    // Call NVIDIA non-streaming with a tight server-side timeout (9.5s)
+    // Call NVIDIA non-streaming with aggressive timeout (9.9s)
+    t0 = Date.now()
     const fullText = await chatCompletion(
       [
         { role: 'system', content: systemPrompt },
@@ -47,9 +50,10 @@ export async function POST(request: Request) {
       ],
       {
         max_tokens: 256,
-        timeoutMs: 9_500,
+        timeoutMs: 9_900,
       }
     )
+    console.log(`chat: NVIDIA responded in ${Date.now() - t0}ms`)
 
     // Check for [DRAW_PROMPT:...] tag
     let pendingImageId: string | null = null
@@ -79,7 +83,7 @@ export async function POST(request: Request) {
       pendingImageId,
     })
   } catch (error: any) {
-    console.error('chat error:', error)
+    console.error(`chat error after ${Date.now() - t0}ms:`, error)
     return NextResponse.json(
       { error: error.message || 'Internal server error' },
       { status: 500 }
