@@ -1,12 +1,20 @@
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { createClient } from '@/lib/supabase'
-import { chatCompletion } from '@/lib/nvidia'
+import { getSupabaseAdmin } from '@/lib/supabase-admin'
+import { chatCompletion, type NvidiaMessage } from '@/lib/nvidia'
 import { buildSystemPrompt, hasDrawPrompt, parseDrawPrompt, stripDrawPrompt } from '@/lib/draw-prompt'
 import { createPendingImage } from '@/lib/storage'
 import { processPendingImageGeneration } from '@/lib/image-generator'
 
-// Serverless λ — free-tier has 10s maxDuration
-// Client now sends character context directly to avoid DB queries eating into the 10s budget.
+/**
+ * Async chat generation.
+ *
+ * 1. Client saves user message via POST /api/chats (separate call)
+ * 2. Client calls this endpoint to START chat generation
+ * 3. This endpoint fires NVIDIA in background (waitUntil), returns { chat_id } immediately
+ * 4. When NVIDIA finishes, result is saved to the `chats` table via admin client
+ * 5. Client polls GET /api/chats to detect the new assistant message
+ */
 
 export async function POST(request: Request) {
   const supabase = await createClient()
@@ -16,44 +24,64 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  let t0 = 0
+  const {
+    character_id,
+    chat_id,
+    messages,
+    personality_prompt,
+    visual_template,
+    body_description,
+  } = await request.json()
+
+  if (!character_id || !chat_id || !messages?.length) {
+    return NextResponse.json(
+      { error: 'Missing required fields: character_id, chat_id, messages' },
+      { status: 400 }
+    )
+  }
+
+  // Schedule background task after response (extends function lifetime)
+  after(() => generateAndSaveResponse({
+    userId: user.id,
+    characterId: character_id,
+    chatId: chat_id,
+    messages,
+    personalityPrompt: personality_prompt ?? '',
+    visualTemplate: visual_template ?? '',
+    bodyDescription: body_description,
+  }))
+
+  // Return immediately — client polls for result
+  return NextResponse.json({ chat_id })
+}
+
+// ── Background task ─────────────────────────────────────────────────
+
+interface GenerateParams {
+  userId: string
+  characterId: string
+  chatId: string
+  messages: { role: string; content: string }[]
+  personalityPrompt: string
+  visualTemplate: string
+  bodyDescription?: string
+}
+
+async function generateAndSaveResponse(params: GenerateParams): Promise<void> {
+  const { userId, characterId, chatId, messages, personalityPrompt, visualTemplate, bodyDescription } = params
 
   try {
-    const {
-      messages,
-      character_id,
-      personality_prompt,
-      visual_template,
-      body_description,
-    } = await request.json()
+    // Build system prompt
+    const systemPrompt = buildSystemPrompt(personalityPrompt, visualTemplate, bodyDescription)
 
-    if (!character_id || !messages?.length) {
-      return NextResponse.json(
-        { error: 'Missing required fields: character_id, messages' },
-        { status: 400 }
-      )
-    }
-
-    // Build system prompt on the server (pure function, fast)
-    const systemPrompt = buildSystemPrompt(
-      personality_prompt ?? '',
-      visual_template ?? '',
-      body_description
-    )
-
-    // Call NVIDIA non-streaming with aggressive timeout (9.9s)
-    t0 = Date.now()
+    // Call NVIDIA
     const fullText = await chatCompletion(
       [
         { role: 'system', content: systemPrompt },
-        ...messages,
+        ...messages as NvidiaMessage[],
       ],
-      {
-        max_tokens: 256,
-        timeoutMs: 9_900,
-      }
+      { max_tokens: 256 }
     )
-    console.log(`chat: NVIDIA responded in ${Date.now() - t0}ms`)
 
     // Check for [DRAW_PROMPT:...] tag
     let pendingImageId: string | null = null
@@ -62,15 +90,15 @@ export async function POST(request: Request) {
       if (drawPrompt) {
         const sceneDescription = drawPrompt.split(',').slice(0, 3).join(',').trim()
         pendingImageId = await createPendingImage(
-          user.id,
-          character_id,
+          userId,
+          characterId,
           drawPrompt,
           sceneDescription
         )
         processPendingImageGeneration(
           pendingImageId,
-          character_id,
-          user.id,
+          characterId,
+          userId,
           drawPrompt
         )
       }
@@ -78,15 +106,37 @@ export async function POST(request: Request) {
 
     const cleanText = stripDrawPrompt(fullText)
 
-    return NextResponse.json({
-      text: cleanText,
-      pendingImageId,
-    })
+    // Save assistant message to DB using admin client
+    const admin = getSupabaseAdmin()
+    const { data: chat } = await admin
+      .from('chats')
+      .select('messages')
+      .eq('id', chatId)
+      .single()
+
+    if (!chat) {
+      console.error(`Chat not found: ${chatId}`)
+      return
+    }
+
+    const assistantMsg = {
+      role: 'assistant',
+      content: cleanText,
+      timestamp: new Date().toISOString(),
+      image_url: undefined,
+      pending_image_id: pendingImageId ?? undefined,
+    }
+
+    const updatedMessages = [...(chat.messages ?? []), assistantMsg]
+
+    await admin
+      .from('chats')
+      .update({ messages: updatedMessages })
+      .eq('id', chatId)
+
+    console.log(`Background chat gen complete for ${chatId}`)
   } catch (error: any) {
-    console.error(`chat error after ${Date.now() - t0}ms:`, error)
-    return NextResponse.json(
-      { error: error.message || 'Internal server error' },
-      { status: 500 }
-    )
+    console.error(`Background chat gen failed for ${chatId}:`, error)
+    // Could mark as failed in DB, but for now just log
   }
 }

@@ -36,6 +36,7 @@ export default function ChatPage() {
   const [deletingTimestamp, setDeletingTimestamp] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Auto-focus input after sending completes
   useEffect(() => {
@@ -48,6 +49,13 @@ export default function ChatPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.()
   }, [messages])
+
+  // Clean up poll on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [])
 
   // Fetch character + existing chat on mount
   useEffect(() => {
@@ -185,7 +193,7 @@ export default function ChatPage() {
     }
   }, [characterId])
 
-  // ── Send message ──
+  // ── Send message (async — client polls for result) ──
   async function handleSend() {
     const content = input.trim()
     if (!content || sending) return
@@ -194,42 +202,31 @@ export default function ChatPage() {
     setSending(true)
     setError(null)
 
+    // Clean up any existing poll
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+
     // Optimistic user message
     const userMsg: ChatMessage = {
       role: 'user',
       content,
       timestamp: new Date().toISOString(),
     }
-    const streamTs = new Date().toISOString()
+    const assistantTs = new Date().toISOString()
     setMessages((prev) => [...prev, userMsg])
 
     try {
-      // Step 1 (save user msg) & Step 2 (generate) in parallel
-      const [saveRes, genRes] = await Promise.all([
-        fetch('/api/chats', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            character_id: characterId,
-            content: userMsg.content,
-          }),
+      // Step 1: Save user message
+      const saveRes = await fetch('/api/chats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          character_id: characterId,
+          content: userMsg.content,
         }),
-        fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            character_id: characterId,
-            messages: messages.concat(userMsg).map((m) => ({
-              role: m.role,
-              content: m.content,
-            })),
-            personality_prompt: character?.personality_prompt ?? '',
-            visual_template: character?.visual_template ?? '',
-            body_description: character?.body_params ? buildBodyDescription(character.body_params) : undefined,
-          }),
-          signal: AbortSignal.timeout(30_000),
-        }),
-      ])
+      })
 
       if (!saveRes.ok) {
         const errData = await saveRes.json()
@@ -238,46 +235,96 @@ export default function ChatPage() {
       const savedChat = await saveRes.json()
       setChat(savedChat)
 
-      if (!genRes.ok) {
-        const errData = await genRes.json()
-        throw new Error(errData.error || `伺服器錯誤 (${genRes.status})`)
-      }
-
-      // ── Non-streaming JSON response ──
-      const genData = await genRes.json()
-      const { text: fullText, pendingImageId } = genData
-
-      // Show complete assistant message immediately
-      // Step 3: Save final assistant message to DB
-      const finalMsg: ChatMessage = {
-        role: 'assistant',
-        content: fullText,
-        timestamp: streamTs,
-        image_url: undefined,
-        pending_image_id: pendingImageId ?? undefined,
-      }
-
-      setMessages((prev) => [...prev, finalMsg])
-
-      const patchRes = await fetch('/api/chats', {
-        method: 'PATCH',
+      // Step 2: Start chat generation (returns immediately)
+      const genRes = await fetch('/api/chat', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          character_id: characterId,
           chat_id: savedChat.id,
-          message: finalMsg,
+          messages: messages.concat(userMsg).map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          personality_prompt: character?.personality_prompt ?? '',
+          visual_template: character?.visual_template ?? '',
+          body_description: character?.body_params ? buildBodyDescription(character.body_params) : undefined,
         }),
+        signal: AbortSignal.timeout(15_000),
       })
-      if (patchRes.ok) {
-        const updatedChat = await patchRes.json()
-        setChat(updatedChat)
+
+      if (!genRes.ok) {
+        const errData = await genRes.json()
+        // If it failed, still try polling (generation may have started in background)
+        console.warn('Chat generation start returned error:', errData)
       }
+
+      // Show placeholder assistant message
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: '', timestamp: assistantTs } as ChatMessage,
+      ])
+
+      // Step 3: Poll for result
+      const userTs = userMsg.timestamp
+      const maxPollTime = 45_000 // stop polling after 45s
+      const pollStart = Date.now()
+
+      pollRef.current = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/chats?character_id=${characterId}`)
+          if (!res.ok) return
+
+          const chatData = await res.json()
+          const allMsgs: ChatMessage[] = chatData?.messages ?? []
+
+          // Find assistant messages after our user message
+          const newMsgs = allMsgs.filter(
+            (m) => m.role === 'assistant' && m.timestamp > userTs && m.content
+          )
+
+          if (newMsgs.length > 0) {
+            // Found the response
+            const latest = newMsgs[newMsgs.length - 1]
+
+            if (pollRef.current) {
+              clearInterval(pollRef.current)
+              pollRef.current = null
+            }
+
+            setChat(chatData)
+            setMessages((prev) => {
+              const updated = [...prev]
+              const last = updated[updated.length - 1]
+              if (last.role === 'assistant' && last.timestamp === assistantTs) {
+                updated[updated.length - 1] = latest
+              }
+              return updated
+            })
+            setSending(false)
+            return
+          }
+
+          // Timeout check
+          if (Date.now() - pollStart > maxPollTime) {
+            if (pollRef.current) {
+              clearInterval(pollRef.current)
+              pollRef.current = null
+            }
+            setError('伺服器忙碌中，請稍後再試')
+            setMessages((prev) => prev.filter((m) => m !== userMsg && m.timestamp !== assistantTs))
+            setSending(false)
+          }
+        } catch {
+          // Ignore poll errors — just retry
+        }
+      }, 2_000)
     } catch (err: any) {
       console.error('Send error:', err)
       setError(err.name === 'TimeoutError' ? '伺服器忙碌中，請稍後再試' : err.message)
       setMessages((prev) =>
         prev.filter((m) => m !== userMsg)
       )
-    } finally {
       setSending(false)
     }
   }
