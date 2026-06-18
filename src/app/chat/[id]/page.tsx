@@ -223,7 +223,7 @@ export default function ChatPage() {
               content: m.content,
             })),
           }),
-          signal: AbortSignal.timeout(25_000),
+          signal: AbortSignal.timeout(30_000),
         }),
       ])
 
@@ -332,7 +332,7 @@ export default function ChatPage() {
       })
     } catch (err: any) {
       console.error('Send error:', err)
-      setError(err.message)
+      setError(err.name === 'TimeoutError' ? '伺服器忙碌中，請稍後再試' : err.message)
       // Clean up optimistic messages
       setMessages((prev) =>
         prev.filter((m) => {
