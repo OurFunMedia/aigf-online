@@ -79,7 +79,7 @@ async function generateAndSaveResponse(params: GenerateParams): Promise<void> {
         { role: 'system', content: systemPrompt },
         ...messages as NvidiaMessage[],
       ],
-      { max_tokens: 256 }
+      { max_tokens: 1024 }
     )
 
     // Check for [DRAW_PROMPT:...] tag
