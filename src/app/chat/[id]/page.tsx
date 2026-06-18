@@ -239,9 +239,66 @@ export default function ChatPage() {
         throw new Error(errData.error || `伺服器錯誤 (${genRes.status})`)
       }
 
-      // ── Non-streaming response (JSON) ──
-      const genData = await genRes.json()
-      const { text: fullText, pendingImageId } = genData
+      // ── Streaming NDJSON response ──
+      let fullText = ''
+      let pendingImageId: string | null = null
+      let streamError: string | null = null
+
+      // Show empty assistant message immediately
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: '', timestamp: streamTs } as ChatMessage,
+      ])
+
+      const reader = genRes.body!.getReader()
+      const decoder = new TextDecoder()
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value)
+        for (const line of chunk.split('\n').filter(Boolean)) {
+          try {
+            const data = JSON.parse(line)
+            if (data.e) {
+              streamError = data.message
+              break
+            }
+            if (data.t) {
+              fullText += data.t
+              // Update message text in real-time as tokens arrive
+              setMessages((prev) => {
+                const updated = [...prev]
+                const last = updated[updated.length - 1]
+                if (last.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, content: fullText }
+                }
+                return updated
+              })
+            }
+            if (data.d) {
+              pendingImageId = data.pid ?? null
+              // Use the authoritative clean text from the server (tag already stripped)
+              if (data.text) {
+                fullText = data.text
+                setMessages((prev) => {
+                  const updated = [...prev]
+                  const last = updated[updated.length - 1]
+                  if (last.role === 'assistant') {
+                    updated[updated.length - 1] = { ...last, content: fullText }
+                  }
+                  return updated
+                })
+              }
+            }
+          } catch {
+            // skip malformed JSON lines
+          }
+        }
+      }
+
+      if (streamError) throw new Error(streamError)
 
       // Step 3: Save final assistant message to DB
       const finalMsg: ChatMessage = {
@@ -265,12 +322,25 @@ export default function ChatPage() {
         setChat(updatedChat)
       }
 
-      setMessages((prev) => [...prev, finalMsg])
+      setMessages((prev) => {
+        const updated = [...prev]
+        const last = updated[updated.length - 1]
+        if (last.role === 'assistant' && last.timestamp === streamTs) {
+          updated[updated.length - 1] = finalMsg
+        }
+        return updated
+      })
     } catch (err: any) {
       console.error('Send error:', err)
       setError(err.message)
+      // Clean up optimistic messages
       setMessages((prev) =>
-        prev.filter((m) => m !== userMsg)
+        prev.filter((m) => {
+          if (m === userMsg) return false
+          // Remove the streaming assistant message (identified by timestamp)
+          if (m.role === 'assistant' && m.timestamp === streamTs) return false
+          return true
+        })
       )
     } finally {
       setSending(false)
