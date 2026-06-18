@@ -13,6 +13,7 @@ export async function chatCompletion(
     temperature?: number
     top_p?: number
     max_tokens?: number
+    timeoutMs?: number       // AbortSignal timeout for the fetch call
   }
 ): Promise<string> {
   const apiKey = process.env.NVIDIA_API_KEY
@@ -34,6 +35,7 @@ export async function chatCompletion(
       max_tokens: options?.max_tokens ?? 4096,
       stream: false,
     }),
+    signal: options?.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
   })
 
   if (!response.ok) {

@@ -1,12 +1,11 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase'
-import { chatCompletionStream } from '@/lib/nvidia'
-import { buildSystemPrompt } from '@/lib/draw-prompt'
+import { chatCompletion } from '@/lib/nvidia'
+import { buildSystemPrompt, hasDrawPrompt, parseDrawPrompt, stripDrawPrompt } from '@/lib/draw-prompt'
+import { createPendingImage } from '@/lib/storage'
 import { getCharacter } from '@/lib/services/character-service'
+import { processPendingImageGeneration } from '@/lib/image-generator'
 import type { BodyParams } from '@/types/database'
-
-// Edge Runtime — Vercel free-tier Edge has ~30s timeout vs Serverless 10s
-export const runtime = 'edge'
 
 /** Build Chinese body description from structured body params */
 function buildBodyDescription(bp: BodyParams): string {
@@ -36,7 +35,7 @@ export async function POST(request: Request) {
       )
     }
 
-    // Load character for personality and visual template (cached)
+    // Load character for personality and visual template
     const character = await getCharacter(character_id)
     if (!character || character.user_id !== user.id) {
       return NextResponse.json({ error: 'Character not found' }, { status: 404 })
@@ -49,18 +48,47 @@ export async function POST(request: Request) {
       character.body_params ? buildBodyDescription(character.body_params) : undefined
     )
 
-    // Get streaming NDJSON from NVIDIA — return directly to client.
-    // chatCompletionStream handles DRAW_PROMPT tag detection and stripping internally.
-    const stream = await chatCompletionStream([
-      { role: 'system', content: systemPrompt },
-      ...messages,
-    ])
+    // Call NVIDIA non-streaming with a short server-side timeout (8s).
+    // Vercel free-tier Serverless has 10s maxDuration, so we leave ~2s buffer.
+    const fullText = await chatCompletion(
+      [
+        { role: 'system', content: systemPrompt },
+        ...messages,
+      ],
+      {
+        max_tokens: 512,        // keep response short for speed
+        timeoutMs: 8_000,       // server-side timeout
+      }
+    )
 
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'no-cache',
-      },
+    // Check for [DRAW_PROMPT:...] tag in the response
+    let pendingImageId: string | null = null
+    if (hasDrawPrompt(fullText)) {
+      const drawPrompt = parseDrawPrompt(fullText)
+      if (drawPrompt) {
+        const sceneDescription = drawPrompt.split(',').slice(0, 3).join(',').trim()
+        pendingImageId = await createPendingImage(
+          user.id,
+          character_id,
+          drawPrompt,
+          sceneDescription
+        )
+        // Fire background image generation (non-blocking)
+        processPendingImageGeneration(
+          pendingImageId,
+          character_id,
+          user.id,
+          drawPrompt
+        )
+      }
+    }
+
+    // Strip the [DRAW_PROMPT] tag before sending to client
+    const cleanText = stripDrawPrompt(fullText)
+
+    return NextResponse.json({
+      text: cleanText,
+      pendingImageId,
     })
   } catch (error: any) {
     console.error('chat error:', error)
