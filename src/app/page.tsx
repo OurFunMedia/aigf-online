@@ -48,7 +48,7 @@ export default function HomePage() {
           <div>
             <h1 className="text-2xl font-bold text-white">你的 AI 伴侶</h1>
             <p className="mt-1 text-sm text-zinc-400">
-              選擇一個角色開始聊天，或創建新的伴侶
+              選擇一個角色開始聊天，或創建新的伴侶 🚀 v2
             </p>
           </div>
           <Button
