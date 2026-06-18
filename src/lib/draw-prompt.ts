@@ -1,5 +1,13 @@
-const DRAW_PROMPT_REGEX = /\[\s*DRAW_PROMPT:\s*([\s\S]*?)\]/g
 import type { BodyParams } from '@/types/database'
+
+/** Primary regex: properly closed [DRAW_PROMPT: ...] tag */
+const DRAW_PROMPT_REGEX = /\[\s*DRAW_PROMPT:\s*([\s\S]*?)\]/g
+
+/**
+ * Fallback: match unclosed [DRAW_PROMPT: at end of text.
+ * NVIDIA MiniMax M2.7 sometimes omits the closing bracket.
+ */
+const DRAW_PROMPT_UNCLOSED_REGEX = /\[\s*DRAW_PROMPT:\s*([\s\S]*?)$/m
 
 /** Build Chinese body description from structured body params */
 export function buildBodyDescription(bp: BodyParams): string {
@@ -11,18 +19,40 @@ export function buildBodyDescription(bp: BodyParams): string {
   return `年齡${bp.age}歲，胸部${bustLabels[bp.bust] ?? bp.bust}，腰圍${waistLabels[bp.waist] ?? bp.waist}，臀部${hipWidthLabels[bp.hip_width] ?? bp.hip_width}、${hipShapeLabels[bp.hip_shape] ?? bp.hip_shape}。`
 }
 
+/** Clean trailing quotes/punctuation from a raw prompt fragment */
+function cleanPrompt(raw: string): string {
+  return raw.trim().replace(/["'`]+$/g, '').trim()
+}
+
 export function parseDrawPrompt(text: string): string | null {
+  // Try exact match first (properly closed tag)
+  DRAW_PROMPT_REGEX.lastIndex = 0
   const match = DRAW_PROMPT_REGEX.exec(text)
-  return match ? match[1].trim() : null
+  if (match) return match[1].trim()
+
+  // Fallback: try to find unclosed [DRAW_PROMPT: at end of text
+  const unclosedMatch = text.match(DRAW_PROMPT_UNCLOSED_REGEX)
+  if (unclosedMatch) {
+    const prompt = cleanPrompt(unclosedMatch[1])
+    if (prompt) return prompt
+  }
+
+  return null
 }
 
 export function hasDrawPrompt(text: string): boolean {
   DRAW_PROMPT_REGEX.lastIndex = 0
-  return DRAW_PROMPT_REGEX.test(text)
+  if (DRAW_PROMPT_REGEX.test(text)) return true
+
+  // Fallback: check for unclosed [DRAW_PROMPT:
+  return DRAW_PROMPT_UNCLOSED_REGEX.test(text)
 }
 
 export function stripDrawPrompt(text: string): string {
-  return text.replace(DRAW_PROMPT_REGEX, '').replace(/\s+/g, ' ').trim()
+  let result = text.replace(DRAW_PROMPT_REGEX, '')
+  // Also strip unclosed variant
+  result = result.replace(DRAW_PROMPT_UNCLOSED_REGEX, '')
+  return result.replace(/\s+/g, ' ').trim()
 }
 
 export function buildSystemPrompt(

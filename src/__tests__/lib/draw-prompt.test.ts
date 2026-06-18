@@ -21,6 +21,27 @@ smiling at camera] there`
   it('returns null for empty string', () => {
     expect(parseDrawPrompt('')).toBeNull()
   })
+
+  it('extracts prompt from unclosed tag at end of text (NVIDIA bug workaround)', () => {
+    const text = 'blah blah [DRAW_PROMPT: brown medium-length hair, sexy'
+    expect(parseDrawPrompt(text)).toBe('brown medium-length hair, sexy')
+  })
+
+  it('extracts prompt from unclosed tag with trailing quote', () => {
+    const text = 'some text [DRAW_PROMPT: brown hair, cute selfie"'
+    expect(parseDrawPrompt(text)).toBe('brown hair, cute selfie')
+  })
+
+  it('extracts prompt from unclosed tag at end of multi-line text', () => {
+    const text = `Hi there!
+This is my photo! [DRAW_PROMPT: brown hair, smiling at camera, 4k`
+    expect(parseDrawPrompt(text)).toBe('brown hair, smiling at camera, 4k')
+  })
+
+  it('prefers properly closed tag over unclosed one', () => {
+    const text = 'hello [DRAW_PROMPT: closed tag] world [DRAW_PROMPT: unclosed'
+    expect(parseDrawPrompt(text)).toBe('closed tag')
+  })
 })
 
 describe('hasDrawPrompt', () => {
@@ -30,6 +51,10 @@ describe('hasDrawPrompt', () => {
 
   it('returns false when no tag', () => {
     expect(hasDrawPrompt('just text')).toBe(false)
+  })
+
+  it('returns true for unclosed tag at end of text', () => {
+    expect(hasDrawPrompt('blah [DRAW_PROMPT: brown hair, sexy')).toBe(true)
   })
 })
 
@@ -42,6 +67,10 @@ describe('stripDrawPrompt', () => {
   it('returns same text when no tag', () => {
     const text = 'Just a message'
     expect(stripDrawPrompt(text)).toBe(text)
+  })
+
+  it('removes unclosed DRAW_PROMPT tag from end of text', () => {
+    expect(stripDrawPrompt('Hello [DRAW_PROMPT: brown hair, sexy')).toBe('Hello')
   })
 })
 
