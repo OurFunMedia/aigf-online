@@ -7,6 +7,9 @@ import { getCharacter } from '@/lib/services/character-service'
 import { processPendingImageGeneration } from '@/lib/image-generator'
 import type { BodyParams } from '@/types/database'
 
+// Edge Runtime — Vercel free-tier Edge has ~30s timeout vs Serverless 10s
+export const runtime = 'edge'
+
 /** Build Chinese body description from structured body params */
 function buildBodyDescription(bp: BodyParams): string {
   const bustLabels: Record<string, string> = { flat: '平坦', medium: '中等', noticeable: '豐滿', large: '豐滿' }

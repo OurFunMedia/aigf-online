@@ -223,6 +223,7 @@ export default function ChatPage() {
               content: m.content,
             })),
           }),
+          signal: AbortSignal.timeout(25_000),
         }),
       ])
 
