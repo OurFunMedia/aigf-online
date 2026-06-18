@@ -1,4 +1,4 @@
-const DRAW_PROMPT_REGEX = /\[DRAW_PROMPT:\s*([\s\S]*?)\]/g
+const DRAW_PROMPT_REGEX = /\[\s*DRAW_PROMPT:\s*([\s\S]*?)\]/g
 import type { BodyParams } from '@/types/database'
 
 /** Build Chinese body description from structured body params */
