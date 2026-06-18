@@ -75,42 +75,58 @@ export default function ChatPage() {
         }
 
         const chatData = await chatRes.json()
-        const resolvedMessages = chatData?.messages ?? []
+        const resolvedMessages: ChatMessage[] = chatData?.messages ?? []
+        const supabase = createBrowserSupabaseClient()
 
-        // Resolve any pending images right after loading messages
-        // (handles page refresh where image was already generated)
-        if (resolvedMessages.length > 0) {
-          const pendingIds: string[] = []
-          for (const m of resolvedMessages) {
-            if (m.pending_image_id) pendingIds.push(m.pending_image_id)
+        // Get all completed images for this character (for both resolution paths)
+        const { data: characterImages } = await supabase
+          .from('images')
+          .select('id, status, storage_url, created_at')
+          .eq('character_id', characterId)
+          .eq('status', 'completed')
+          .order('created_at', { ascending: false })
+          .limit(20)
+
+        const completedImages = characterImages ?? []
+        const pendingImageMap = Object.fromEntries(
+          completedImages.map((img: any) => [img.id, img])
+        )
+
+        // Step 1: Resolve messages with pending_image_id
+        for (let i = 0; i < resolvedMessages.length; i++) {
+          const msg = resolvedMessages[i]
+          if (!msg.pending_image_id) continue
+          const img = pendingImageMap[msg.pending_image_id]
+          if (!img) continue
+          resolvedMessages[i] = {
+            ...msg,
+            image_url: img.storage_url || undefined,
+            pending_image_id: undefined,
           }
-          if (pendingIds.length > 0) {
-            const supabase = createBrowserSupabaseClient()
-            const { data: imagesData } = await supabase
-              .from('images')
-              .select('id, status, storage_url')
-              .in('id', pendingIds)
+        }
 
-            if (imagesData?.length) {
-              const imageMap = Object.fromEntries(
-                imagesData.map((img: any) => [img.id, img])
-              )
-              for (let i = 0; i < resolvedMessages.length; i++) {
-                const msg = resolvedMessages[i]
-                if (!msg.pending_image_id) continue
-                const img = imageMap[msg.pending_image_id]
-                if (!img) continue
-                if (img.status === 'completed') {
-                  resolvedMessages[i] = {
-                    ...msg,
-                    image_url: img.storage_url || undefined,
-                    pending_image_id: undefined,
-                  }
-                } else if (img.status === 'failed') {
-                  resolvedMessages[i] = { ...msg, pending_image_id: undefined }
-                }
-              }
-            }
+        // Step 2: Fallback — if the last assistant message still has no image,
+        // associate the most recent completed image (created after the message)
+        const usedImageIds = new Set(
+          resolvedMessages
+            .filter((m) => m.image_url)
+            .map((m) => m.image_url)
+        )
+        for (let i = resolvedMessages.length - 1; i >= 0; i--) {
+          const msg = resolvedMessages[i]
+          if (msg.role !== 'assistant') continue
+          if (msg.image_url) continue // already has an image
+
+          const msgTime = new Date(msg.timestamp).getTime()
+          const match = completedImages.find((img: any) => {
+            if (usedImageIds.has(img.storage_url)) return false
+            const imgTime = new Date(img.created_at).getTime()
+            return imgTime >= msgTime
+          })
+          if (match) {
+            resolvedMessages[i] = { ...msg, image_url: match.storage_url || undefined }
+            usedImageIds.add(match.storage_url)
+            break // only the most recent assistant message gets this treatment
           }
         }
 
