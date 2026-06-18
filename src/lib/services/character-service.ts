@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase'
+import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import type { BodyParams, Character } from '@/types/database'
 
 // ── In-memory character cache (60s TTL) ──
@@ -41,6 +42,31 @@ export async function getCharacter(id: string): Promise<Character | null> {
 
   if (error) {
     if (error.code === 'PGRST116') return null // not found
+    throw new Error(error.message)
+  }
+
+  setCached(id, data)
+  return data
+}
+
+/**
+ * Same as getCharacter() but uses the service-role admin client.
+ * Safe to call outside request context (e.g. background image generation).
+ * Bypasses RLS — only use server-side for system operations.
+ */
+export async function getCharacterAdmin(id: string): Promise<Character | null> {
+  const cached = getCached(id)
+  if (cached) return cached
+
+  const supabase = getSupabaseAdmin()
+  const { data, error } = await supabase
+    .from('characters')
+    .select('*')
+    .eq('id', id)
+    .single()
+
+  if (error) {
+    if (error.code === 'PGRST116') return null
     throw new Error(error.message)
   }
 
