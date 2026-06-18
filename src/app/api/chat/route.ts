@@ -49,15 +49,16 @@ export async function POST(request: Request) {
     )
 
     // Call NVIDIA non-streaming with a short server-side timeout (8s).
-    // Vercel free-tier Serverless has 10s maxDuration, so we leave ~2s buffer.
+    // Vercel free-tier Serverless has 10s maxDuration.
+    // NVIDIA seems slower from Vercel's network, so use 9.5s server-side timeout.
     const fullText = await chatCompletion(
       [
         { role: 'system', content: systemPrompt },
         ...messages,
       ],
       {
-        max_tokens: 512,        // keep response short for speed
-        timeoutMs: 8_000,       // server-side timeout
+        max_tokens: 256,        // keep response short for speed
+        timeoutMs: 9_500,       // server-side timeout (max before 10s Vercel limit)
       }
     )
 
