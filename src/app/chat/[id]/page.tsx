@@ -267,8 +267,9 @@ export default function ChatPage() {
 
       // Step 3: Poll for result
       const userTs = userMsg.timestamp
-      const maxPollTime = 45_000 // stop polling after 45s
+      const maxPollTime = 60_000
       const pollStart = Date.now()
+      let retriesLeft = 2
 
       pollRef.current = setInterval(async () => {
         try {
@@ -305,8 +306,33 @@ export default function ChatPage() {
             return
           }
 
-          // Timeout check
+          // Timeout check — retry generation before giving up
           if (Date.now() - pollStart > maxPollTime) {
+            if (retriesLeft > 0) {
+              retriesLeft--
+              // Retry: call POST /api/chat again (warm instance might be faster)
+              try {
+                await fetch('/api/chat', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    character_id: characterId,
+                    chat_id: savedChat.id,
+                    messages: messages.concat(userMsg).map((m) => ({
+                      role: m.role,
+                      content: m.content,
+                    })),
+                    personality_prompt: character?.personality_prompt ?? '',
+                    visual_template: character?.visual_template ?? '',
+                    body_description: character?.body_params ? buildBodyDescription(character.body_params) : undefined,
+                  }),
+                  signal: AbortSignal.timeout(15_000),
+                })
+              } catch {
+                // retry failed, continue polling
+              }
+              return
+            }
             if (pollRef.current) {
               clearInterval(pollRef.current)
               pollRef.current = null

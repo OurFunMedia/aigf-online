@@ -6,9 +6,6 @@ import { buildSystemPrompt, hasDrawPrompt, parseDrawPrompt, stripDrawPrompt } fr
 import { createPendingImage } from '@/lib/storage'
 import { processPendingImageGeneration } from '@/lib/image-generator'
 
-// Edge Runtime — 30s timeout for background after() tasks
-export const runtime = 'edge'
-
 /**
  * Async chat generation.
  *
