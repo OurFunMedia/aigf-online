@@ -4,7 +4,6 @@ import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import { chatCompletion, type NvidiaMessage } from '@/lib/nvidia'
 import { buildSystemPrompt, hasDrawPrompt, parseDrawPrompt, stripDrawPrompt } from '@/lib/draw-prompt'
 import { createPendingImage } from '@/lib/storage'
-import { processPendingImageGeneration } from '@/lib/image-generator'
 
 /**
  * Async chat generation.
@@ -95,12 +94,9 @@ async function generateAndSaveResponse(params: GenerateParams): Promise<void> {
           drawPrompt,
           sceneDescription
         )
-        processPendingImageGeneration(
-          pendingImageId,
-          characterId,
-          userId,
-          drawPrompt
-        )
+        // Image generation is triggered by client via POST /api/images/generate
+        // after polling detects the pending_image_id.
+        // Fallback recovery: instrumentation.ts on startup, POST /api/images/retry
       }
     }
 

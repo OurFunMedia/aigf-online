@@ -303,6 +303,18 @@ export default function ChatPage() {
               return updated
             })
             setSending(false)
+
+            // Trigger image generation in its own request context
+            if (latest.pending_image_id) {
+              fetch('/api/images/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image_id: latest.pending_image_id }),
+              }).catch(() => {
+                // Best-effort — image will be retried via /api/images/retry
+              })
+            }
+
             return
           }
 
