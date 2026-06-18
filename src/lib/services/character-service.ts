@@ -1,6 +1,21 @@
 import { createClient } from '@/lib/supabase'
 import type { BodyParams, Character } from '@/types/database'
 
+// ── In-memory character cache (60s TTL) ──
+const characterCache = new Map<string, { data: Character; expiry: number }>()
+const CACHE_TTL = 60_000
+
+function getCached(id: string): Character | null {
+  const entry = characterCache.get(id)
+  if (entry && entry.expiry > Date.now()) return entry.data
+  characterCache.delete(id)
+  return null
+}
+
+function setCached(id: string, data: Character): void {
+  characterCache.set(id, { data, expiry: Date.now() + CACHE_TTL })
+}
+
 export async function getCharacters(userId: string): Promise<Character[]> {
   const supabase = await createClient()
   const { data, error } = await supabase
@@ -14,6 +29,9 @@ export async function getCharacters(userId: string): Promise<Character[]> {
 }
 
 export async function getCharacter(id: string): Promise<Character | null> {
+  const cached = getCached(id)
+  if (cached) return cached
+
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('characters')
@@ -25,6 +43,8 @@ export async function getCharacter(id: string): Promise<Character | null> {
     if (error.code === 'PGRST116') return null // not found
     throw new Error(error.message)
   }
+
+  setCached(id, data)
   return data
 }
 
@@ -80,6 +100,9 @@ export async function updateCharacter(
     if (error.code === 'PGRST116') return null
     throw new Error(error.message)
   }
+
+  // Bust cache so next getCharacter() re-fetches
+  characterCache.delete(id)
   return data
 }
 

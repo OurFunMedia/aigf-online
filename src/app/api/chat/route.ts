@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase'
-import { chatCompletion } from '@/lib/nvidia'
-import { buildSystemPrompt, parseDrawPrompt, stripDrawPrompt } from '@/lib/draw-prompt'
+import { chatCompletionStream } from '@/lib/nvidia'
+import { buildSystemPrompt } from '@/lib/draw-prompt'
 import { createPendingImage } from '@/lib/storage'
 import { getCharacter } from '@/lib/services/character-service'
 import { processPendingImageGeneration } from '@/lib/image-generator'
@@ -35,7 +35,7 @@ export async function POST(request: Request) {
       )
     }
 
-    // Load character for personality and visual template
+    // Load character for personality and visual template (cached)
     const character = await getCharacter(character_id)
     if (!character || character.user_id !== user.id) {
       return NextResponse.json({ error: 'Character not found' }, { status: 404 })
@@ -48,42 +48,80 @@ export async function POST(request: Request) {
       character.body_params ? buildBodyDescription(character.body_params) : undefined
     )
 
-    // Call NVIDIA MiniMax M2.7
-    const assistantMessage = await chatCompletion([
+    // Get streaming response from NVIDIA
+    const nvidiaStream = await chatCompletionStream([
       { role: 'system', content: systemPrompt },
       ...messages,
     ])
 
-    // Check for DRAW_PROMPT tag
-    const drawPromptText = parseDrawPrompt(assistantMessage)
-    const cleanMessage = stripDrawPrompt(assistantMessage)
+    // Read from NVIDIA stream, intercept the final event to create pending image
+    const reader = nvidiaStream.getReader()
+    const decoder = new TextDecoder()
 
-    let pendingImageId: string | null = null
+    const outputStream = new ReadableStream({
+      async start(controller) {
+        const encoder2 = new TextEncoder()
 
-    if (drawPromptText) {
-      const sceneDescription = drawPromptText.split(',').slice(0, 3).join(',').trim()
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) {
+              controller.close()
+              return
+            }
 
-      // Create a pending image record — do NOT wait for generation
-      pendingImageId = await createPendingImage(
-        user.id,
-        character_id,
-        drawPromptText,
-        sceneDescription
-      )
+            const text = decoder.decode(value)
+            // Check if this is the final event (has "d":true)
+            if (text.includes('"d":true')) {
+              try {
+                const parsed = JSON.parse(text.trim())
+                const drawPrompt = parsed.drawPrompt || null
 
-      // Fire off background generation (does not block the response)
-      processPendingImageGeneration(
-        pendingImageId,
-        character_id,
-        user.id,
-        drawPromptText
-      )
-    }
+                let pendingImageId: string | null = null
+                if (drawPrompt) {
+                  const sceneDescription = drawPrompt.split(',').slice(0, 3).join(',').trim()
+                  pendingImageId = await createPendingImage(
+                    user.id,
+                    character_id,
+                    drawPrompt,
+                    sceneDescription
+                  )
+                  // Fire background image generation
+                  processPendingImageGeneration(
+                    pendingImageId,
+                    character_id,
+                    user.id,
+                    drawPrompt
+                  )
+                }
 
-    return NextResponse.json({
-      text: cleanMessage,
-      pendingImageId,
-      hasPendingImage: !!pendingImageId,
+                // Send final event with pendingImageId to client
+                const finalEvent = JSON.stringify({
+                  d: true,
+                  pid: pendingImageId,
+                  text: parsed.text || '',
+                })
+                controller.enqueue(encoder2.encode(finalEvent + '\n'))
+              } catch {
+                // If parsing fails, forward the original chunk
+                controller.enqueue(encoder2.encode(text))
+              }
+            } else {
+              controller.enqueue(encoder2.encode(text))
+            }
+          }
+        } catch (err: any) {
+          controller.enqueue(encoder2.encode(JSON.stringify({ e: true, message: err.message }) + '\n'))
+          controller.close()
+        }
+      },
+    })
+
+    return new Response(outputStream, {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Cache-Control': 'no-cache',
+      },
     })
   } catch (error: any) {
     console.error('chat error:', error)

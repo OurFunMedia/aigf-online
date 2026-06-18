@@ -199,18 +199,33 @@ export default function ChatPage() {
       content,
       timestamp: new Date().toISOString(),
     }
+    const streamTs = new Date().toISOString()
     setMessages((prev) => [...prev, userMsg])
 
     try {
-      // 1. Save user message to DB
-      const saveRes = await fetch('/api/chats', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          character_id: characterId,
-          content: userMsg.content,
+      // Step 1 (save user msg) & Step 2 (generate) in parallel
+      const [saveRes, genRes] = await Promise.all([
+        fetch('/api/chats', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            character_id: characterId,
+            content: userMsg.content,
+          }),
         }),
-      })
+        fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            character_id: characterId,
+            messages: messages.concat(userMsg).map((m) => ({
+              role: m.role,
+              content: m.content,
+            })),
+          }),
+        }),
+      ])
+
       if (!saveRes.ok) {
         const errData = await saveRes.json()
         throw new Error(errData.error || `儲存失敗 (${saveRes.status})`)
@@ -218,40 +233,75 @@ export default function ChatPage() {
       const savedChat = await saveRes.json()
       setChat(savedChat)
 
-      // 2. Generate assistant response (async — image generation runs in background)
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          character_id: characterId,
-          messages: messages.concat(userMsg).map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-        }),
-      })
-
-      const data = await res.json()
-      if (!res.ok) {
-        throw new Error(data.error || `伺服器錯誤 (${res.status})`)
+      if (!genRes.ok) {
+        const errData = await genRes.json()
+        throw new Error(errData.error || `伺服器錯誤 (${genRes.status})`)
       }
 
-      // 3. Build assistant message — image may come later via Realtime
-      const assistantMsg: ChatMessage = {
+      // ── Streaming response ──
+      let fullText = ''
+      let pendingImageId: string | null = null
+      let streamError: string | null = null
+
+      // Show empty assistant message immediately
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: '', timestamp: streamTs } as ChatMessage,
+      ])
+
+      const reader = genRes.body!.getReader()
+      const decoder = new TextDecoder()
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value)
+        for (const line of chunk.split('\n').filter(Boolean)) {
+          try {
+            const data = JSON.parse(line)
+            if (data.e) {
+              streamError = data.message
+              break
+            }
+            if (data.t) {
+              fullText += data.t
+              // Update message text in real-time as tokens arrive
+              setMessages((prev) => {
+                const updated = [...prev]
+                const last = updated[updated.length - 1]
+                if (last.role === 'assistant') {
+                  updated[updated.length - 1] = { ...last, content: fullText }
+                }
+                return updated
+              })
+            }
+            if (data.d) {
+              pendingImageId = data.pid ?? null
+            }
+          } catch {
+            // skip malformed JSON lines
+          }
+        }
+      }
+
+      if (streamError) throw new Error(streamError)
+
+      // Step 3: Save final assistant message to DB
+      const finalMsg: ChatMessage = {
         role: 'assistant',
-        content: data.text,
-        timestamp: new Date().toISOString(),
+        content: fullText,
+        timestamp: streamTs,
         image_url: undefined,
-        pending_image_id: data.pendingImageId ?? undefined,
+        pending_image_id: pendingImageId ?? undefined,
       }
 
-      // 4. Save assistant message to DB
       const patchRes = await fetch('/api/chats', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: savedChat.id,
-          message: assistantMsg,
+          message: finalMsg,
         }),
       })
       if (patchRes.ok) {
@@ -259,11 +309,26 @@ export default function ChatPage() {
         setChat(updatedChat)
       }
 
-      setMessages((prev) => [...prev, assistantMsg])
+      setMessages((prev) => {
+        const updated = [...prev]
+        const last = updated[updated.length - 1]
+        if (last.role === 'assistant' && last.timestamp === streamTs) {
+          updated[updated.length - 1] = finalMsg
+        }
+        return updated
+      })
     } catch (err: any) {
       console.error('Send error:', err)
       setError(err.message)
-      setMessages((prev) => prev.filter((m) => m !== userMsg))
+      // Clean up optimistic messages
+      setMessages((prev) =>
+        prev.filter((m) => {
+          if (m === userMsg) return false
+          // Remove the streaming assistant message (identified by timestamp)
+          if (m.role === 'assistant' && m.timestamp === streamTs) return false
+          return true
+        })
+      )
     } finally {
       setSending(false)
     }
