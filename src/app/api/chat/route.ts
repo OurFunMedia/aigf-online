@@ -3,23 +3,10 @@ import { createClient } from '@/lib/supabase'
 import { chatCompletion } from '@/lib/nvidia'
 import { buildSystemPrompt, hasDrawPrompt, parseDrawPrompt, stripDrawPrompt } from '@/lib/draw-prompt'
 import { createPendingImage } from '@/lib/storage'
-import { getCharacter } from '@/lib/services/character-service'
 import { processPendingImageGeneration } from '@/lib/image-generator'
-import type { BodyParams } from '@/types/database'
 
-// Edge Runtime — Vercel free-tier Edge has ~30s timeout vs Serverless 10s.
-// Used with non-streaming JSON response (no ReadableStream wrapping issues).
-export const runtime = 'edge'
-
-/** Build Chinese body description from structured body params */
-function buildBodyDescription(bp: BodyParams): string {
-  const bustLabels: Record<string, string> = { flat: '平坦', medium: '中等', noticeable: '豐滿', large: '豐滿' }
-  const waistLabels: Record<string, string> = { thin: '纖細', medium: '適中', wide: '較寬' }
-  const hipWidthLabels: Record<string, string> = { narrow: '較窄', medium: '適中', wide: '較寬' }
-  const hipShapeLabels: Record<string, string> = { flat: '平坦', round: '圓潤' }
-
-  return `年齡${bp.age}歲，胸部${bustLabels[bp.bust] ?? bp.bust}，腰圍${waistLabels[bp.waist] ?? bp.waist}，臀部${hipWidthLabels[bp.hip_width] ?? bp.hip_width}、${hipShapeLabels[bp.hip_shape] ?? bp.hip_shape}。`
-}
+// Serverless λ — free-tier has 10s maxDuration
+// Client now sends character context directly to avoid DB queries eating into the 10s budget.
 
 export async function POST(request: Request) {
   const supabase = await createClient()
@@ -30,7 +17,13 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { character_id, messages } = await request.json()
+    const {
+      messages,
+      character_id,
+      personality_prompt,
+      visual_template,
+      body_description,
+    } = await request.json()
 
     if (!character_id || !messages?.length) {
       return NextResponse.json(
@@ -39,20 +32,14 @@ export async function POST(request: Request) {
       )
     }
 
-    // Load character for personality and visual template
-    const character = await getCharacter(character_id)
-    if (!character || character.user_id !== user.id) {
-      return NextResponse.json({ error: 'Character not found' }, { status: 404 })
-    }
-
-    // Build system prompt with visual consistency constraints
+    // Build system prompt on the server (pure function, fast)
     const systemPrompt = buildSystemPrompt(
-      character.personality_prompt,
-      character.visual_template,
-      character.body_params ? buildBodyDescription(character.body_params) : undefined
+      personality_prompt ?? '',
+      visual_template ?? '',
+      body_description
     )
 
-    // Edge Runtime has ~30s timeout — give NVIDIA up to 25s to respond.
+    // Call NVIDIA non-streaming with a tight server-side timeout (9.5s)
     const fullText = await chatCompletion(
       [
         { role: 'system', content: systemPrompt },
@@ -60,11 +47,11 @@ export async function POST(request: Request) {
       ],
       {
         max_tokens: 256,
-        timeoutMs: 25_000,
+        timeoutMs: 9_500,
       }
     )
 
-    // Check for [DRAW_PROMPT:...] tag in the response
+    // Check for [DRAW_PROMPT:...] tag
     let pendingImageId: string | null = null
     if (hasDrawPrompt(fullText)) {
       const drawPrompt = parseDrawPrompt(fullText)
@@ -76,7 +63,6 @@ export async function POST(request: Request) {
           drawPrompt,
           sceneDescription
         )
-        // Fire background image generation (non-blocking)
         processPendingImageGeneration(
           pendingImageId,
           character_id,
@@ -86,7 +72,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // Strip the [DRAW_PROMPT] tag before sending to client
     const cleanText = stripDrawPrompt(fullText)
 
     return NextResponse.json({

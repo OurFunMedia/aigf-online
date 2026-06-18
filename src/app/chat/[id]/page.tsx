@@ -18,6 +18,7 @@ import { Input } from '@/components/ui/input'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { createBrowserSupabaseClient } from '@/lib/supabase-client'
+import { buildBodyDescription } from '@/lib/draw-prompt'
 import type { Character, Chat, ChatMessage, Image as ImageRecord } from '@/types/database'
 
 export default function ChatPage() {
@@ -222,6 +223,9 @@ export default function ChatPage() {
               role: m.role,
               content: m.content,
             })),
+            personality_prompt: character?.personality_prompt ?? '',
+            visual_template: character?.visual_template ?? '',
+            body_description: character?.body_params ? buildBodyDescription(character.body_params) : undefined,
           }),
           signal: AbortSignal.timeout(30_000),
         }),

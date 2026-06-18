@@ -1,4 +1,15 @@
 const DRAW_PROMPT_REGEX = /\[DRAW_PROMPT:\s*([\s\S]*?)\]/g
+import type { BodyParams } from '@/types/database'
+
+/** Build Chinese body description from structured body params */
+export function buildBodyDescription(bp: BodyParams): string {
+  const bustLabels: Record<string, string> = { flat: '平坦', medium: '中等', noticeable: '豐滿', large: '豐滿' }
+  const waistLabels: Record<string, string> = { thin: '纖細', medium: '適中', wide: '較寬' }
+  const hipWidthLabels: Record<string, string> = { narrow: '較窄', medium: '適中', wide: '較寬' }
+  const hipShapeLabels: Record<string, string> = { flat: '平坦', round: '圓潤' }
+
+  return `年齡${bp.age}歲，胸部${bustLabels[bp.bust] ?? bp.bust}，腰圍${waistLabels[bp.waist] ?? bp.waist}，臀部${hipWidthLabels[bp.hip_width] ?? bp.hip_width}、${hipShapeLabels[bp.hip_shape] ?? bp.hip_shape}。`
+}
 
 export function parseDrawPrompt(text: string): string | null {
   const match = DRAW_PROMPT_REGEX.exec(text)
