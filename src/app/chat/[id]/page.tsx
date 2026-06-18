@@ -90,6 +90,46 @@ export default function ChatPage() {
     init()
   }, [characterId, router])
 
+  // ── Resolve pending images on mount (handles page refresh) ──
+  useEffect(() => {
+    if (!messages.length || !characterId) return
+
+    const pendingIds = messages
+      .filter((m) => m.pending_image_id)
+      .map((m) => m.pending_image_id)
+    if (!pendingIds.length) return
+
+    const supabase = createBrowserSupabaseClient()
+    supabase
+      .from('images')
+      .select('id, status, storage_url')
+      .in('id', pendingIds)
+      .then(({ data, error }) => {
+        if (error || !data?.length) return
+        const imageMap = Object.fromEntries(data.map((img) => [img.id, img]))
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (!msg.pending_image_id) return msg
+            const img = imageMap[msg.pending_image_id]
+            if (!img) return msg
+            if (img.status === 'completed') {
+              return {
+                ...msg,
+                image_url: img.storage_url || undefined,
+                pending_image_id: undefined,
+              }
+            }
+            if (img.status === 'failed') {
+              return { ...msg, pending_image_id: undefined }
+            }
+            return msg
+          })
+        )
+      })
+    // Only run once on mount — intentional missing deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [characterId])
+
   // ── Supabase Realtime: listen for completed images ──
   useEffect(() => {
     if (!characterId) return
