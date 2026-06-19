@@ -9,8 +9,10 @@ import { processPendingImageGeneration } from '@/lib/image-generator'
  * Trigger image generation for a specific pending image record.
  * Called by the client after polling detects a pending_image_id.
  *
- * This runs in its own request context — NOT inside after() —
- * so it has a full timeout budget independent of the chat API.
+ * Awaits the full generation lifecycle (Agnes API call + storage upload)
+ * so that serverless platforms (Cloud Run, Vercel) keep CPU allocated
+ * for the entire duration. The client handles this asynchronously via
+ * the fire-and-forget fetch + Supabase Realtime status updates.
  */
 export async function POST(request: Request) {
   const supabase = await createClient()
@@ -49,15 +51,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ status: 'skipped', reason: 'already_completed' })
     }
 
-    // Fire background generation (non-blocking — but inside a fresh request context)
-    processPendingImageGeneration(
+    // Await the full generation so the server keeps CPU allocated
+    // for the entire Agnes API call. This is critical on Cloud Run
+    // (CPU throttled after response) and safe on Vercel (request
+    // timeout is sufficient). The client ignores this response body
+    // and relies on Supabase Realtime for status updates.
+    await processPendingImageGeneration(
       image.id,
       image.character_id,
       image.user_id,
       image.prompt
     )
 
-    return NextResponse.json({ status: 'started', image_id: image.id })
+    // The generation updated the DB status internally (completed/failed).
+    // The Realtime channel will push the update to the client.
+    return NextResponse.json({ status: 'completed', image_id: image.id })
   } catch (error: any) {
     console.error('Image generate error:', error)
     return NextResponse.json({ error: error.message || 'Internal server error' }, { status: 500 })
