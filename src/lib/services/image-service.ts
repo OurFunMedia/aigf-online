@@ -12,15 +12,22 @@ function storageUrlToPath(storageUrl: string): string {
 
 export async function getImages(
   userId: string,
-  order: 'asc' | 'desc' = 'desc'
+  order: 'asc' | 'desc' = 'desc',
+  /** 'completed' (default) | 'any' — filter by status */
+  statusFilter: 'completed' | 'any' = 'completed'
 ): Promise<Image[]> {
   const supabase = await createClient()
-  const { data, error } = await supabase
+  const query = supabase
     .from('images')
     .select('*')
     .eq('user_id', userId)
-    .eq('status', 'completed')
     .order('created_at', { ascending: order === 'asc' })
+
+  if (statusFilter === 'completed') {
+    query.eq('status', 'completed')
+  }
+
+  const { data, error } = await query
 
   if (error) throw new Error(error.message)
   return data ?? []

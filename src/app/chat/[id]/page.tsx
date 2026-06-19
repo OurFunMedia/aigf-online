@@ -277,7 +277,8 @@ export default function ChatPage() {
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch('/api/images')
+        // Use status=any to get all images (not just completed ones)
+        const res = await fetch('/api/images?status=any')
         if (!res.ok) return
 
         const images: ImageRecord[] = await res.json()
