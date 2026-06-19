@@ -53,6 +53,8 @@ export interface Image {
   user_id: string
   prompt: string
   storage_url: string
+  /** WebP thumbnail (400px) for gallery grid — null for legacy records */
+  thumbnail_url: string | null
   scene_description: string | null
   status: ImageStatus
   error_message: string | null
