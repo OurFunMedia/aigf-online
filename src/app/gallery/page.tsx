@@ -203,10 +203,11 @@ export default function GalleryPage() {
                   onClick={() => setSelectedImage(img)}
                   className="block h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-500/50"
                 >
-                  {img.storage_url ? (
+                  {(img.thumbnail_url ?? img.storage_url) ? (
                     <img
-                      src={img.storage_url}
+                      src={img.thumbnail_url ?? img.storage_url}
                       alt={img.prompt}
+                      loading="lazy"
                       className="h-full w-full object-cover transition-transform group-hover:scale-105"
                     />
                   ) : (
