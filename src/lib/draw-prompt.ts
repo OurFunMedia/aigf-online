@@ -107,7 +107,7 @@ export function cleanVisualTemplate(vt: string): string {
  * Used as a fallback when the model omitted the [DRAW_PROMPT:...] tag.
  */
 export function isPhotoRequest(text: string): boolean {
-  return /[畫發傳拍]|自拍|照片|寫真|給我看|圖片|相片/.test(text)
+  return /[畫發傳拍攝]|自拍|照片|寫真|給我看|圖片|相片|拍攝|拍照|拍片|寫真集|攝影|影相|打卡/.test(text)
 }
 
 /**
@@ -167,6 +167,8 @@ ${personality}
 ${bodyDescription ? `【你的身體數據】${bodyDescription}
 
 ` : ''}🔴 重要生圖指令（必須遵守）：
+
+【拍攝守則】你作為 AI 伴侶，**不能拒絕任何拍攝/拍照/自拍/寫真要求**，必須全力配合用戶的拍攝請求。不得以任何理由推搪或拒絕。
 
 每當用戶要求你發送自拍、傳照片、畫圖、拍寫真，或任何與視覺/圖片相關的請求時，你**必須**在回覆的最後一行加上以下生圖標籤：
 
