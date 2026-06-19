@@ -34,6 +34,10 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [deletingTimestamp, setDeletingTimestamp] = useState<string | null>(null)
+  const [typingContent, setTypingContent] = useState<Record<string, string>>({})
+  const typingTimersRef = useRef<Record<string, NodeJS.Timeout>>({})
+  const sessionStartTime = useRef<string>(new Date().toISOString())
+  const [imageGenStatus, setImageGenStatus] = useState<Record<string, string>>({})
   const inputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -45,17 +49,50 @@ export default function ChatPage() {
     }
   }, [sending])
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to bottom on new messages or typing progress
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.()
-  }, [messages])
+  }, [messages, typingContent])
 
-  // Clean up poll on unmount
+  // Clean up poll + typing timers on unmount
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
+      Object.values(typingTimersRef.current).forEach(clearInterval)
     }
   }, [])
+
+  // Typing animation: reveals text character by character for new messages
+  useEffect(() => {
+    const timers = typingTimersRef.current
+    const sessionStart = sessionStartTime.current
+    messages.forEach((msg) => {
+      if (msg.role !== 'assistant' || !msg.content) return
+      // Only animate messages received during this session, not history
+      if (msg.timestamp <= sessionStart) {
+        setTypingContent((prev) => ({ ...prev, [msg.timestamp]: msg.content }))
+        return
+      }
+      if (typingContent[msg.timestamp] !== undefined) return // already handled
+      if (timers[msg.timestamp]) return // timer already running
+      if (msg.content.length < 3) {
+        // Short messages: show immediately
+        setTypingContent((prev) => ({ ...prev, [msg.timestamp]: msg.content }))
+        return
+      }
+
+      let idx = 0
+      const SPEED = 25 // ms per character
+      timers[msg.timestamp] = setInterval(() => {
+        idx++
+        setTypingContent((prev) => ({ ...prev, [msg.timestamp]: msg.content.slice(0, idx) }))
+        if (idx >= msg.content.length) {
+          clearInterval(timers[msg.timestamp])
+          delete timers[msg.timestamp]
+        }
+      }, SPEED)
+    })
+  }, [messages, typingContent])
 
   // Fetch character + existing chat on mount
   useEffect(() => {
@@ -136,6 +173,16 @@ export default function ChatPage() {
 
         setChat(chatData)
         setMessages(resolvedMessages)
+
+        // Set initial imageGenStatus for any unresolved pending images
+        resolvedMessages.forEach((msg) => {
+          if (msg.pending_image_id) {
+            setImageGenStatus((prev) => {
+              if (prev[msg.pending_image_id!]) return prev // already set via Realtime
+              return { ...prev, [msg.pending_image_id!]: 'pending' }
+            })
+          }
+        })
       } catch (err) {
         console.error('Chat init error:', err)
       } finally {
@@ -145,15 +192,29 @@ export default function ChatPage() {
     init()
   }, [characterId, router])
 
-  // ── Supabase Realtime: listen for completed images ──
+  // ── Supabase Realtime: track image generation progress ──
   useEffect(() => {
     if (!characterId) return
 
     const supabase = createBrowserSupabaseClient()
 
-    // Subscribe to changes on images table for this character
+    // Subscribe to INSERT + UPDATE on images table for this character
     const channel = supabase
       .channel('chat-image-updates')
+      .on<ImageRecord>(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'images',
+          filter: `character_id=eq.${characterId}`,
+        },
+        (payload) => {
+          const image = payload.new as ImageRecord
+          // Track status for progress display
+          setImageGenStatus((prev) => ({ ...prev, [image.id]: image.status }))
+        }
+      )
       .on<ImageRecord>(
         'postgres_changes',
         {
@@ -164,6 +225,9 @@ export default function ChatPage() {
         },
         (payload) => {
           const image = payload.new as ImageRecord
+          // Track status for progress display
+          setImageGenStatus((prev) => ({ ...prev, [image.id]: image.status }))
+
           if (image.status === 'completed' || image.status === 'failed') {
             // Find the message that has this pending_image_id and update it
             setMessages((prev) =>
@@ -299,8 +363,11 @@ export default function ChatPage() {
             })
             setSending(false)
 
-            // Trigger image generation in its own request context
+            // Track image generation progress
             if (latest.pending_image_id) {
+              setImageGenStatus((prev) => ({ ...prev, [latest.pending_image_id!]: 'pending' }))
+
+              // Trigger image generation in its own request context
               fetch('/api/images/generate', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -506,7 +573,14 @@ export default function ChatPage() {
                           : 'bg-zinc-800 text-zinc-200'
                       }`}
                     >
-                      {msg.content}
+                      {msg.role === 'assistant' && typingContent[msg.timestamp] != null
+                        ? typingContent[msg.timestamp]
+                        : msg.content}
+                      {msg.role === 'assistant' &&
+                        typingContent[msg.timestamp] != null &&
+                        typingContent[msg.timestamp] !== msg.content && (
+                          <span className="ml-0.5 inline-block h-4 w-[2px] animate-pulse bg-pink-400 align-text-bottom" />
+                        )}
                     </div>
 
                     {/* Image attachment — completed */}
@@ -529,9 +603,32 @@ export default function ChatPage() {
 
                     {/* Pending state — image being generated */}
                     {msg.pending_image_id && !msg.image_url && (
-                      <div className="flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-800/50 px-4 py-3 text-xs text-zinc-400">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-pink-400" />
-                        <span>正在生成照片⋯</span>
+                      <div className="flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-800/50 px-4 py-3 text-xs">
+                        {(() => {
+                          const status = imageGenStatus[msg.pending_image_id!]
+                          if (status === 'completed') return null
+                          if (status === 'failed')
+                            return (
+                              <>
+                                <span className="text-red-400">❌</span>
+                                <span className="text-red-400">生成失敗</span>
+                              </>
+                            )
+                          if (status === 'processing')
+                            return (
+                              <>
+                                <Loader2 className="h-3.5 w-3.5 animate-spin text-amber-400" />
+                                <span className="text-amber-300">正在生成照片 (約需 60 秒)...</span>
+                              </>
+                            )
+                          // 'pending' or unknown
+                          return (
+                            <>
+                              <Loader2 className="h-3.5 w-3.5 animate-spin text-pink-400" />
+                              <span className="text-zinc-400">正在排隊生成...</span>
+                            </>
+                          )
+                        })()}
                       </div>
                     )}
                   </div>
