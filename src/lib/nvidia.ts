@@ -20,9 +20,15 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     model: 'agnes-2.0-flash',
     apiKeyEnvVar: 'AGNES_API_KEY',
   },
+  openrouter: {
+    name: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'google/gemma-4-31b-it:free',
+    apiKeyEnvVar: 'OPENROUTER_API_KEY',
+  },
 }
 
-const DEFAULT_PROVIDER = 'agnes'
+const DEFAULT_PROVIDER = 'openrouter'
 
 function getActiveProvider(): ProviderConfig {
   const choice = process.env.CHAT_PROVIDER ?? DEFAULT_PROVIDER
