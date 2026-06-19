@@ -30,8 +30,9 @@ export interface Character {
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  /** URL of a generated image attached to this message */
   image_url?: string
-  /** ID of the pending image record, set when generation is in progress */
+  /** Legacy: ID of a pending image record (pre-simplification). Kept for backward compat. */
   pending_image_id?: string
   timestamp: string
 }

@@ -51,12 +51,15 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
  * 5. Upload to Supabase Storage
  * 6. Update image record to 'completed' with the storage URL
  */
+/**
+ * @returns The storage URL of the generated image, or throws on failure.
+ */
 export async function processPendingImageGeneration(
   imageId: string,
   characterId: string,
   userId: string,
   drawPrompt: string
-): Promise<void> {
+): Promise<string> {
   try {
     const cleanPrompt = sanitizePrompt(drawPrompt)
 
@@ -97,10 +100,11 @@ export async function processPendingImageGeneration(
     await withRetry(() =>
       updateImageStatus(imageId, 'completed', { storage_url: storageUrl })
     )
+
+    return storageUrl
   } catch (error: any) {
-    console.error(`Background image generation failed for ${imageId}:`, error)
-    // Best-effort: mark as failed. If this fails too, the image stays processing/pending
-    // and will be picked up by the batch retry endpoint.
+    console.error(`Image generation failed for ${imageId}:`, error)
+    // Best-effort: mark as failed
     try {
       await updateImageStatus(imageId, 'failed', {
         error_message: error.message || 'Unknown error during image generation',
@@ -108,5 +112,7 @@ export async function processPendingImageGeneration(
     } catch (innerErr) {
       console.error(`FATAL: could not update image ${imageId} to failed:`, innerErr)
     }
+    // Return empty string so caller knows image gen failed
+    return ''
   }
 }

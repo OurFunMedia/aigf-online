@@ -4,15 +4,16 @@ import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import { chatCompletion, type NvidiaMessage } from '@/lib/nvidia'
 import { buildSystemPrompt, hasDrawPrompt, parseDrawPrompt, stripDrawPrompt, isPhotoRequest, buildFallbackDrawPrompt } from '@/lib/draw-prompt'
 import { createPendingImage } from '@/lib/storage'
+import { processPendingImageGeneration } from '@/lib/image-generator'
 
 /**
- * Async chat generation.
+ * Synchronous chat + image generation.
  *
  * 1. Client saves user message via POST /api/chats (separate call)
- * 2. Client calls this endpoint to START chat generation
- * 3. This endpoint fires NVIDIA in background (waitUntil), returns { chat_id } immediately
- * 4. When NVIDIA finishes, result is saved to the `chats` table via admin client
- * 5. Client polls GET /api/chats to detect the new assistant message
+ * 2. Client calls this endpoint — we await the FULL pipeline:
+ *    NVIDIA → (if draw prompt) Agnes image gen → Storage upload
+ * 3. Assistant message (with image_url if applicable) is saved to DB
+ * 4. Return full result: { chat_id, text, image_url? }
  */
 
 export async function POST(request: Request) {
@@ -39,22 +40,32 @@ export async function POST(request: Request) {
     )
   }
 
-  // Await NVIDIA + DB save so Cloud Run keeps CPU allocated.
-  // Client has 30s timeout + polls /api/chats as fallback.
-  await generateAndSaveResponse({
-    userId: user.id,
-    characterId: character_id,
-    chatId: chat_id,
-    messages,
-    personalityPrompt: personality_prompt ?? '',
-    visualTemplate: visual_template ?? '',
-    bodyDescription: body_description,
-  })
+  try {
+    const result = await generateAndSaveResponse({
+      userId: user.id,
+      characterId: character_id,
+      chatId: chat_id,
+      messages,
+      personalityPrompt: personality_prompt ?? '',
+      visualTemplate: visual_template ?? '',
+      bodyDescription: body_description,
+    })
 
-  return NextResponse.json({ chat_id })
+    return NextResponse.json({
+      chat_id,
+      text: result.text,
+      image_url: result.imageUrl ?? null,
+    })
+  } catch (error: any) {
+    console.error(`Chat generation failed for ${chat_id}:`, error)
+    return NextResponse.json(
+      { error: error.message || 'Chat generation failed' },
+      { status: 500 }
+    )
+  }
 }
 
-// ── Background task ─────────────────────────────────────────────────
+// ── Synchronous pipeline ────────────────────────────────────────────
 
 interface GenerateParams {
   userId: string
@@ -66,88 +77,102 @@ interface GenerateParams {
   bodyDescription?: string
 }
 
-async function generateAndSaveResponse(params: GenerateParams): Promise<void> {
+interface GenerateResult {
+  text: string
+  imageUrl?: string
+}
+
+async function generateAndSaveResponse(params: GenerateParams): Promise<GenerateResult> {
   const { userId, characterId, chatId, messages, personalityPrompt, visualTemplate, bodyDescription } = params
 
-  try {
-    // Build system prompt
-    const systemPrompt = buildSystemPrompt(personalityPrompt, visualTemplate, bodyDescription)
+  // Build system prompt
+  const systemPrompt = buildSystemPrompt(personalityPrompt, visualTemplate, bodyDescription)
 
-    // Call NVIDIA
-    const fullText = await chatCompletion(
-      [
-        { role: 'system', content: systemPrompt },
-        ...messages as NvidiaMessage[],
-      ],
-      { max_tokens: 1024 }
-    )
+  // Call NVIDIA
+  const fullText = await chatCompletion(
+    [
+      { role: 'system', content: systemPrompt },
+      ...messages as NvidiaMessage[],
+    ],
+    { max_tokens: 1024 }
+  )
 
-    // Check for [DRAW_PROMPT:...] tag (from model) or build fallback (if model omitted it)
-    let pendingImageId: string | null = null
-    let drawPrompt: string | null = null
+  // Check for [DRAW_PROMPT:...] tag or build fallback
+  let drawPrompt: string | null = null
 
-    if (hasDrawPrompt(fullText)) {
-      drawPrompt = parseDrawPrompt(fullText)
-    }
+  if (hasDrawPrompt(fullText)) {
+    drawPrompt = parseDrawPrompt(fullText)
+  }
 
-    // Fallback: if the model didn't include the tag but the user asked for a photo,
-    // construct a draw prompt from the visual_template + user message keywords
-    if (!drawPrompt) {
-      const userMsg = messages.filter((m) => m.role === 'user').pop()
-      if (userMsg && isPhotoRequest(userMsg.content)) {
-        drawPrompt = buildFallbackDrawPrompt(userMsg.content, visualTemplate)
-        if (drawPrompt) {
-          console.log(`Fallback draw prompt generated for chat ${chatId}: ${drawPrompt.substring(0, 100)}...`)
-        }
+  // Fallback: if the model omitted the tag but user asked for a photo
+  if (!drawPrompt) {
+    const userMsg = messages.filter((m) => m.role === 'user').pop()
+    if (userMsg && isPhotoRequest(userMsg.content)) {
+      drawPrompt = buildFallbackDrawPrompt(userMsg.content, visualTemplate)
+      if (drawPrompt) {
+        console.log(`Fallback draw prompt for chat ${chatId}: ${drawPrompt.substring(0, 100)}...`)
       }
     }
+  }
 
-    if (drawPrompt) {
-      const sceneDescription = drawPrompt.split(',').slice(0, 3).join(',').trim()
-      pendingImageId = await createPendingImage(
+  const cleanText = stripDrawPrompt(fullText)
+  let imageUrl: string | undefined
+
+  // Generate image synchronously if draw prompt was requested
+  if (drawPrompt) {
+    const sceneDescription = drawPrompt.split(',').slice(0, 3).join(',').trim()
+
+    try {
+      const pendingImageId = await createPendingImage(
         userId,
         characterId,
         drawPrompt,
         sceneDescription
       )
-      // Image generation is triggered by client via POST /api/images/generate
-      // after polling detects the pending_image_id.
-      // Fallback recovery: instrumentation.ts on startup, POST /api/images/retry
+
+      // Await the full image generation pipeline (Agnes + Storage)
+      const storageUrl = await processPendingImageGeneration(
+        pendingImageId,
+        characterId,
+        userId,
+        drawPrompt
+      )
+
+      if (storageUrl) {
+        imageUrl = storageUrl
+      }
+    } catch (imgErr) {
+      console.error(`Image generation failed for chat ${chatId}, continuing without image:`, imgErr)
     }
-
-    const cleanText = stripDrawPrompt(fullText)
-
-    // Save assistant message to DB using admin client
-    const admin = getSupabaseAdmin()
-    const { data: chat } = await admin
-      .from('chats')
-      .select('messages')
-      .eq('id', chatId)
-      .single()
-
-    if (!chat) {
-      console.error(`Chat not found: ${chatId}`)
-      return
-    }
-
-    const assistantMsg = {
-      role: 'assistant',
-      content: cleanText,
-      timestamp: new Date().toISOString(),
-      image_url: undefined,
-      pending_image_id: pendingImageId ?? undefined,
-    }
-
-    const updatedMessages = [...(chat.messages ?? []), assistantMsg]
-
-    await admin
-      .from('chats')
-      .update({ messages: updatedMessages })
-      .eq('id', chatId)
-
-    console.log(`Background chat gen complete for ${chatId}`)
-  } catch (error: any) {
-    console.error(`Background chat gen failed for ${chatId}:`, error)
-    // Could mark as failed in DB, but for now just log
   }
+
+  // Save assistant message to DB
+  const admin = getSupabaseAdmin()
+  const { data: chat } = await admin
+    .from('chats')
+    .select('messages')
+    .eq('id', chatId)
+    .single()
+
+  if (!chat) {
+    throw new Error(`Chat not found: ${chatId}`)
+  }
+
+  const assistantMsg: Record<string, unknown> = {
+    role: 'assistant',
+    content: cleanText,
+    timestamp: new Date().toISOString(),
+  }
+  if (imageUrl) {
+    assistantMsg.image_url = imageUrl
+  }
+
+  await admin
+    .from('chats')
+    .update({ messages: [...(chat.messages ?? []), assistantMsg] })
+    .eq('id', chatId)
+
+  console.log(`Chat gen complete for ${chatId}${imageUrl ? ' (with image)' : ''}`)
+
+  return { text: cleanText, imageUrl }
 }
