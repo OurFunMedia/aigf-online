@@ -85,18 +85,13 @@ export default function ChatPage() {
 
         const chatData = await chatRes.json()
         const resolvedMessages: ChatMessage[] = chatData?.messages ?? []
-        const supabase = createBrowserSupabaseClient()
 
-        // Get all completed images for this character (for both resolution paths)
-        const { data: characterImages } = await supabase
-          .from('images')
-          .select('id, status, storage_url, created_at')
-          .eq('character_id', characterId)
-          .eq('status', 'completed')
-          .order('created_at', { ascending: false })
-          .limit(20)
-
-        const completedImages = characterImages ?? []
+        // Fetch completed images via API (uses server-side auth, avoids RLS issues)
+        const imgRes = await fetch(`/api/images`)
+        const allImages: any[] = imgRes.ok ? await imgRes.json() : []
+        const completedImages = allImages.filter(
+          (img: any) => img.character_id === characterId && img.status === 'completed'
+        )
         const pendingImageMap = Object.fromEntries(
           completedImages.map((img: any) => [img.id, img])
         )
