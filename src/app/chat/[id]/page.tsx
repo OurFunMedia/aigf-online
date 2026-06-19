@@ -15,7 +15,7 @@ import {
 import { AppLayout } from '@/components/layout/AppLayout'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ScrollArea } from '@/components/ui/scroll-area'
+
 import { Skeleton } from '@/components/ui/skeleton'
 import { createBrowserSupabaseClient } from '@/lib/supabase-client'
 import { buildBodyDescription } from '@/lib/draw-prompt'
@@ -609,7 +609,7 @@ export default function ChatPage() {
         </div>
 
         {/* Messages area */}
-        <ScrollArea className="min-h-0 flex-1 px-4 py-4" viewportRef={scrollViewportRef}>
+        <div ref={scrollViewportRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           {messages.length === 0 && (
             <div className="flex h-full flex-col items-center justify-center text-center">
               <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-zinc-800">
@@ -760,7 +760,7 @@ export default function ChatPage() {
             )}
             <div ref={bottomRef} />
           </div>
-        </ScrollArea>
+        </div>
 
         {/* Error display */}
         {error && (
