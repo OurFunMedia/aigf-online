@@ -1,3 +1,4 @@
+import sharp from 'sharp'
 import { generateImage } from '@/lib/agnes'
 import { getCharacterAdmin } from '@/lib/services/character-service'
 import { uploadToStorage, updateImageStatus } from '@/lib/storage'
@@ -86,7 +87,7 @@ export async function processPendingImageGeneration(
       })
     )
 
-    // Upload to Supabase Storage
+    // Upload original to Supabase Storage
     const buf = Buffer.from(b64, 'base64')
     const storageUrl = await withRetry(() =>
       uploadToStorage(
@@ -96,9 +97,33 @@ export async function processPendingImageGeneration(
       )
     )
 
+    // Generate + upload thumbnail (400px WebP, ~30-50 KB vs 2-5 MB original)
+    let thumbnailUrl: string | undefined
+    try {
+      const thumbBuf = await sharp(buf)
+        .resize(400, undefined, { fit: 'cover', withoutEnlargement: true })
+        .webp({ quality: 80 })
+        .toBuffer()
+
+      const thumbArrayBuf = thumbBuf.buffer.slice(thumbBuf.byteOffset, thumbBuf.byteOffset + thumbBuf.byteLength) as ArrayBuffer
+      thumbnailUrl = await withRetry(() =>
+        uploadToStorage(
+          thumbArrayBuf,
+          userId,
+          characterId,
+          { prefix: 'thumb', contentType: 'image/webp' }
+        )
+      )
+    } catch (thumbErr) {
+      console.warn(`Thumbnail generation failed for ${imageId}, continuing without:`, thumbErr)
+    }
+
     // Mark as completed
     await withRetry(() =>
-      updateImageStatus(imageId, 'completed', { storage_url: storageUrl })
+      updateImageStatus(imageId, 'completed', {
+        storage_url: storageUrl,
+        ...(thumbnailUrl && { thumbnail_url: thumbnailUrl }),
+      })
     )
 
     return storageUrl
