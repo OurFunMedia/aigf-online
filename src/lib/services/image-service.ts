@@ -2,14 +2,6 @@ import { createClient } from '@/lib/supabase'
 import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import type { Image } from '@/types/database'
 
-/** Extract Storage file path from a Supabase public URL */
-function storageUrlToPath(storageUrl: string): string {
-  const prefix = '/object/public/companion-photos/'
-  const idx = storageUrl.indexOf(prefix)
-  if (idx === -1) throw new Error(`Cannot parse storage URL: ${storageUrl}`)
-  return storageUrl.slice(idx + prefix.length)
-}
-
 export async function getImages(
   userId: string,
   order: 'asc' | 'desc' = 'desc',
@@ -33,13 +25,21 @@ export async function getImages(
   return data ?? []
 }
 
+/** Convert storage URL back to file path for all path variants (original or thumb) */
+function storageUrlToFilePath(storageUrl: string): string {
+  const prefix = '/object/public/companion-photos/'
+  const idx = storageUrl.indexOf(prefix)
+  if (idx === -1) throw new Error(`Cannot parse storage URL: ${storageUrl}`)
+  return storageUrl.slice(idx + prefix.length)
+}
+
 export async function deleteImage(id: string, userId: string): Promise<void> {
   const supabase = await createClient()
 
-  // Fetch the record first to get the storage URL
+  // Fetch the record first to get the storage URLs
   const { data: image, error: fetchError } = await supabase
     .from('images')
-    .select('storage_url')
+    .select('storage_url, thumbnail_url')
     .eq('id', id)
     .eq('user_id', userId)
     .single()
@@ -49,11 +49,18 @@ export async function deleteImage(id: string, userId: string): Promise<void> {
     throw new Error(fetchError.message)
   }
 
-  // Delete from Storage
+  // Delete from Storage (original + thumbnail if exists)
   if (image?.storage_url) {
     const admin = getSupabaseAdmin()
-    const filePath = storageUrlToPath(image.storage_url)
-    await admin.storage.from('companion-photos').remove([filePath])
+    const paths: string[] = [storageUrlToFilePath(image.storage_url)]
+    if (image.thumbnail_url) {
+      try {
+        paths.push(storageUrlToFilePath(image.thumbnail_url))
+      } catch {
+        // skip malformed thumbnail URL
+      }
+    }
+    await admin.storage.from('companion-photos').remove(paths)
   }
 
   // Delete from DB
@@ -72,23 +79,23 @@ export async function clearAllImages(userId: string): Promise<void> {
   // Fetch all image storage URLs for this user
   const { data: images, error: fetchError } = await supabase
     .from('images')
-    .select('storage_url')
+    .select('storage_url, thumbnail_url')
     .eq('user_id', userId)
 
   if (fetchError) throw new Error(fetchError.message)
 
-  // Delete from Storage (all at once)
+  // Delete from Storage (all at once — original + thumbnails)
   if (images?.length) {
     const admin = getSupabaseAdmin()
-    const filePaths = images
-      .map((img) => {
-        try {
-          return img.storage_url ? storageUrlToPath(img.storage_url) : null
-        } catch {
-          return null
-        }
-      })
-      .filter((p): p is string => p !== null)
+    const filePaths: string[] = []
+    for (const img of images) {
+      if (img.storage_url) {
+        try { filePaths.push(storageUrlToFilePath(img.storage_url)) } catch { /* skip */ }
+      }
+      if (img.thumbnail_url) {
+        try { filePaths.push(storageUrlToFilePath(img.thumbnail_url)) } catch { /* skip */ }
+      }
+    }
 
     if (filePaths.length > 0) {
       await admin.storage.from('companion-photos').remove(filePaths)
