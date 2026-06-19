@@ -40,6 +40,8 @@ export default function ChatPage() {
   const [imageGenStatus, setImageGenStatus] = useState<Record<string, string>>({})
   const inputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollViewportRef = useRef<HTMLDivElement>(null)
+  const userScrolledUpRef = useRef(false)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Auto-focus input after sending completes
@@ -49,10 +51,27 @@ export default function ChatPage() {
     }
   }, [sending])
 
-  // Auto-scroll to bottom on new messages or typing progress
+  // Scroll to bottom only if user hasn't manually scrolled up
   useEffect(() => {
-    bottomRef.current?.scrollIntoView?.()
+    if (!userScrolledUpRef.current) {
+      bottomRef.current?.scrollIntoView?.()
+    }
   }, [messages, typingContent])
+
+  // Track whether user has scrolled up from the bottom
+  useEffect(() => {
+    const el = scrollViewportRef.current
+    if (!el) return
+
+    const handleScroll = () => {
+      const threshold = 100
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold
+      userScrolledUpRef.current = !atBottom
+    }
+
+    el.addEventListener('scroll', handleScroll, { passive: true })
+    return () => el.removeEventListener('scroll', handleScroll)
+  }, [])
 
   // Clean up poll + typing timers on unmount
   useEffect(() => {
@@ -590,7 +609,7 @@ export default function ChatPage() {
         </div>
 
         {/* Messages area */}
-        <ScrollArea className="min-h-0 flex-1 px-4 py-4">
+        <ScrollArea className="min-h-0 flex-1 px-4 py-4" viewportRef={scrollViewportRef}>
           {messages.length === 0 && (
             <div className="flex h-full flex-col items-center justify-center text-center">
               <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-zinc-800">
@@ -660,8 +679,12 @@ export default function ChatPage() {
                           src={msg.image_url}
                           alt="Generated photo"
                           className="w-full object-cover"
-                          onLoad={() => bottomRef.current?.scrollIntoView?.()}
-                          onError={() => bottomRef.current?.scrollIntoView?.()}
+                          onLoad={() => {
+                            if (!userScrolledUpRef.current) bottomRef.current?.scrollIntoView?.()
+                          }}
+                          onError={() => {
+                            if (!userScrolledUpRef.current) bottomRef.current?.scrollIntoView?.()
+                          }}
                         />
                       </a>
                     )}
