@@ -89,11 +89,22 @@ export async function processPendingImageGeneration(
 
     // Upload original to Supabase Storage
     const buf = Buffer.from(b64, 'base64')
+    // Generate once so thumbnail uses the exact same timestamp as original
+    const now = new Date()
+    const y = now.getFullYear()
+    const m = String(now.getMonth() + 1).padStart(2, '0')
+    const d = String(now.getDate()).padStart(2, '0')
+    const h = String(now.getHours()).padStart(2, '0')
+    const min = String(now.getMinutes()).padStart(2, '0')
+    const s = String(now.getSeconds()).padStart(2, '0')
+    const ts = `${y}${m}${d}-${h}${min}${s}`
+
     const storageUrl = await withRetry(() =>
       uploadToStorage(
         buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
         userId,
-        characterId
+        characterId,
+        { timestamp: ts }
       )
     )
 
@@ -111,7 +122,7 @@ export async function processPendingImageGeneration(
           thumbArrayBuf,
           userId,
           characterId,
-          { prefix: 'thumb', contentType: 'image/webp' }
+          { prefix: 'thumb', contentType: 'image/webp', timestamp: ts }
         )
       )
     } catch (thumbErr) {
