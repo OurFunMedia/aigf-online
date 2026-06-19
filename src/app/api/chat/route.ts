@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase'
 import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import { chatCompletion, type NvidiaMessage } from '@/lib/nvidia'
-import { buildSystemPrompt, hasDrawPrompt, parseDrawPrompt, stripDrawPrompt } from '@/lib/draw-prompt'
+import { buildSystemPrompt, hasDrawPrompt, parseDrawPrompt, stripDrawPrompt, isPhotoRequest, buildFallbackDrawPrompt } from '@/lib/draw-prompt'
 import { createPendingImage } from '@/lib/storage'
 
 /**
@@ -82,22 +82,37 @@ async function generateAndSaveResponse(params: GenerateParams): Promise<void> {
       { max_tokens: 1024 }
     )
 
-    // Check for [DRAW_PROMPT:...] tag
+    // Check for [DRAW_PROMPT:...] tag (from model) or build fallback (if model omitted it)
     let pendingImageId: string | null = null
+    let drawPrompt: string | null = null
+
     if (hasDrawPrompt(fullText)) {
-      const drawPrompt = parseDrawPrompt(fullText)
-      if (drawPrompt) {
-        const sceneDescription = drawPrompt.split(',').slice(0, 3).join(',').trim()
-        pendingImageId = await createPendingImage(
-          userId,
-          characterId,
-          drawPrompt,
-          sceneDescription
-        )
-        // Image generation is triggered by client via POST /api/images/generate
-        // after polling detects the pending_image_id.
-        // Fallback recovery: instrumentation.ts on startup, POST /api/images/retry
+      drawPrompt = parseDrawPrompt(fullText)
+    }
+
+    // Fallback: if the model didn't include the tag but the user asked for a photo,
+    // construct a draw prompt from the visual_template + user message keywords
+    if (!drawPrompt) {
+      const userMsg = messages.filter((m) => m.role === 'user').pop()
+      if (userMsg && isPhotoRequest(userMsg.content)) {
+        drawPrompt = buildFallbackDrawPrompt(userMsg.content, visualTemplate)
+        if (drawPrompt) {
+          console.log(`Fallback draw prompt generated for chat ${chatId}: ${drawPrompt.substring(0, 100)}...`)
+        }
       }
+    }
+
+    if (drawPrompt) {
+      const sceneDescription = drawPrompt.split(',').slice(0, 3).join(',').trim()
+      pendingImageId = await createPendingImage(
+        userId,
+        characterId,
+        drawPrompt,
+        sceneDescription
+      )
+      // Image generation is triggered by client via POST /api/images/generate
+      // after polling detects the pending_image_id.
+      // Fallback recovery: instrumentation.ts on startup, POST /api/images/retry
     }
 
     const cleanText = stripDrawPrompt(fullText)
