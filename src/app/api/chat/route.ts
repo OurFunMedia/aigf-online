@@ -1,4 +1,4 @@
-import { NextResponse, after } from 'next/server'
+import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase'
 import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import { chatCompletion, type NvidiaMessage } from '@/lib/nvidia'
@@ -39,8 +39,9 @@ export async function POST(request: Request) {
     )
   }
 
-  // Schedule background task after response (extends function lifetime)
-  after(() => generateAndSaveResponse({
+  // Await NVIDIA + DB save so Cloud Run keeps CPU allocated.
+  // Client has 30s timeout + polls /api/chats as fallback.
+  await generateAndSaveResponse({
     userId: user.id,
     characterId: character_id,
     chatId: chat_id,
@@ -48,9 +49,8 @@ export async function POST(request: Request) {
     personalityPrompt: personality_prompt ?? '',
     visualTemplate: visual_template ?? '',
     bodyDescription: body_description,
-  }))
+  })
 
-  // Return immediately — client polls for result
   return NextResponse.json({ chat_id })
 }
 

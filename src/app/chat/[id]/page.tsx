@@ -309,7 +309,7 @@ export default function ChatPage() {
           visual_template: character?.visual_template ?? '',
           body_description: character?.body_params ? buildBodyDescription(character.body_params) : undefined,
         }),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(30_000),
       })
 
       if (!genRes.ok) {
@@ -400,7 +400,7 @@ export default function ChatPage() {
                     visual_template: character?.visual_template ?? '',
                     body_description: character?.body_params ? buildBodyDescription(character.body_params) : undefined,
                   }),
-                  signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(30_000),
                 })
               } catch {
                 // retry failed, continue polling
