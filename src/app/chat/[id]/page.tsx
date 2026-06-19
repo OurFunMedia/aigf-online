@@ -198,45 +198,109 @@ export default function ChatPage() {
 
     const supabase = createBrowserSupabaseClient()
 
-    // Subscribe to INSERT + UPDATE on images table for this character
-    const channel = supabase
-      .channel('chat-image-updates')
-      .on<ImageRecord>(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'images',
-          filter: `character_id=eq.${characterId}`,
-        },
-        (payload) => {
-          const image = payload.new as ImageRecord
-          // Track status for progress display
-          setImageGenStatus((prev) => ({ ...prev, [image.id]: image.status }))
-        }
-      )
-      .on<ImageRecord>(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'images',
-          filter: `character_id=eq.${characterId}`,
-        },
-        (payload) => {
-          const image = payload.new as ImageRecord
-          // Track status for progress display
-          setImageGenStatus((prev) => ({ ...prev, [image.id]: image.status }))
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let subscribed = false
 
-          if (image.status === 'completed' || image.status === 'failed') {
-            // Find the message that has this pending_image_id and update it
+    const setupChannel = () => {
+      const channel = supabase
+        .channel(`chat-image-updates-${characterId}`)
+        .on<ImageRecord>(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'images',
+            filter: `character_id=eq.${characterId}`,
+          },
+          (payload) => {
+            const image = payload.new as ImageRecord
+            setImageGenStatus((prev) => ({ ...prev, [image.id]: image.status }))
+          }
+        )
+        .on<ImageRecord>(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'images',
+            filter: `character_id=eq.${characterId}`,
+          },
+          (payload) => {
+            const image = payload.new as ImageRecord
+            setImageGenStatus((prev) => ({ ...prev, [image.id]: image.status }))
+
+            if (image.status === 'completed' || image.status === 'failed') {
+              setMessages((prev) =>
+                prev.map((msg) => {
+                  if (msg.pending_image_id === image.id) {
+                    return {
+                      ...msg,
+                      image_url: image.storage_url || undefined,
+                      pending_image_id: image.status === 'completed' ? undefined : msg.pending_image_id,
+                    }
+                  }
+                  return msg
+                })
+              )
+            }
+          }
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            subscribed = true
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            // Reconnect after a delay
+            if (reconnectTimer) clearTimeout(reconnectTimer)
+            reconnectTimer = setTimeout(setupChannel, 3_000)
+          }
+        })
+
+      return channel
+    }
+
+    let channel = setupChannel()
+
+    return () => {
+      subscribed = false
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      supabase.removeChannel(channel)
+    }
+  }, [characterId])
+
+  // ── Polling fallback: poll /api/images when any image is pending ──
+  useEffect(() => {
+    const pendingIds = Object.entries(imageGenStatus)
+      .filter(([, status]) => status === 'pending')
+      .map(([id]) => id)
+
+    if (pendingIds.length === 0) return
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch('/api/images')
+        if (!res.ok) return
+
+        const images: ImageRecord[] = await res.json()
+        const imageMap = new Map(images.map((img) => [img.id, img]))
+
+        for (const imgId of pendingIds) {
+          const img = imageMap.get(imgId)
+          if (!img) continue
+
+          // Update status only if it changed since this effect snapshot
+          setImageGenStatus((prev) => {
+            if (prev[imgId] === img.status) return prev
+            return { ...prev, [imgId]: img.status }
+          })
+
+          if (img.status === 'completed' || img.status === 'failed') {
             setMessages((prev) =>
               prev.map((msg) => {
-                if (msg.pending_image_id === image.id) {
+                if (msg.pending_image_id === imgId) {
                   return {
                     ...msg,
-                    image_url: image.storage_url || undefined,
-                    pending_image_id: image.status === 'completed' ? undefined : msg.pending_image_id,
+                    image_url: img.status === 'completed' ? (img.storage_url || undefined) : undefined,
+                    pending_image_id: img.status === 'completed' ? undefined : msg.pending_image_id,
                   }
                 }
                 return msg
@@ -244,13 +308,13 @@ export default function ChatPage() {
             )
           }
         }
-      )
-      .subscribe()
+      } catch {
+        // Ignore poll errors
+      }
+    }, 3_000)
 
-    return () => {
-      supabase.removeChannel(channel)
-    }
-  }, [characterId])
+    return () => clearInterval(interval)
+  }, [imageGenStatus])
 
   // ── Send message (async — client polls for result) ──
   async function handleSend() {
