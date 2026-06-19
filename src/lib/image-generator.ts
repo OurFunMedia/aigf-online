@@ -116,7 +116,9 @@ export async function processPendingImageGeneration(
         .webp({ quality: 80 })
         .toBuffer()
 
-      const thumbArrayBuf = thumbBuf.buffer.slice(thumbBuf.byteOffset, thumbBuf.byteOffset + thumbBuf.byteLength) as ArrayBuffer
+      // Create a fresh copy so ArrayBuffer is clean (sharp's internal pool may have non-zero byteOffset)
+      const thumbCopy = Buffer.from(thumbBuf)
+      const thumbArrayBuf = thumbCopy.buffer.slice(thumbCopy.byteOffset, thumbCopy.byteOffset + thumbCopy.byteLength) as ArrayBuffer
       thumbnailUrl = await withRetry(() =>
         uploadToStorage(
           thumbArrayBuf,
