@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Heart, Home, LogOut, Menu, User } from 'lucide-react'
 import { createBrowserSupabaseClient } from '@/lib/supabase-client'
@@ -20,6 +20,14 @@ interface NavbarProps {
 export function Navbar({ onMenuClick }: NavbarProps) {
   const router = useRouter()
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    const supabase = createBrowserSupabaseClient()
+    supabase.auth.getUser().then(({ data }) => {
+      const url = data.user?.user_metadata?.avatar_url
+      if (url) setAvatarUrl(url)
+    })
+  }, [])
 
   const handleLogout = async () => {
     const supabase = createBrowserSupabaseClient()

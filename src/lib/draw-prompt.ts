@@ -143,7 +143,7 @@ export function buildFallbackDrawPrompt(userMessage: string, visualTemplate: str
   // Strip known prefixes to get the scene description
   const genericScene = userMessage
     .replace(/^[快點]*[幫助我]*[發畫傳拍][一張]*/, '')
-    .replace(/[你]/, 'this young woman')
+    .replace(/[你]/g, 'this young woman')
     .replace(/[吧啦喔唷耶呀嘛呢]*$/g, '')
     .trim()
 
