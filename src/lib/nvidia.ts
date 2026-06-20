@@ -37,9 +37,15 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     model: 'google/gemma-4-31b-it:free',
     apiKeyEnvVar: 'OPENROUTER_API_KEY',
   },
+  gemini: {
+    name: 'Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+    model: 'gemini-2.0-flash',
+    apiKeyEnvVar: 'GEMINI_API_KEY',
+  },
 }
 
-const DEFAULT_PROVIDER = 'openrouter'
+const DEFAULT_PROVIDER = 'gemini'
 
 function getActiveProvider(): ProviderConfig {
   const choice = process.env.CHAT_PROVIDER ?? DEFAULT_PROVIDER
