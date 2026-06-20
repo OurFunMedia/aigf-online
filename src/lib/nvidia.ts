@@ -5,6 +5,7 @@ interface ProviderConfig {
   baseUrl: string
   model: string
   apiKeyEnvVar: string
+  extraBody?: Record<string, unknown>
 }
 
 const PROVIDERS: Record<string, ProviderConfig> = {
@@ -13,6 +14,16 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     baseUrl: 'https://integrate.api.nvidia.com/v1',
     model: 'minimaxai/minimax-m2.7',
     apiKeyEnvVar: 'NVIDIA_API_KEY',
+  },
+  nemotron: {
+    name: 'Nemotron',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    model: 'nvidia/nemotron-3-ultra-550b-a55b',
+    apiKeyEnvVar: 'NVIDIA_API_KEY',
+    extraBody: {
+      chat_template_kwargs: { enable_thinking: true },
+      reasoning_budget: 16384,
+    },
   },
   agnes: {
     name: 'Agnes',
@@ -71,6 +82,7 @@ export async function chatCompletion(
       top_p: options?.top_p ?? 0.95,
       max_tokens: options?.max_tokens ?? 4096,
       stream: false,
+      ...(provider.extraBody ? provider.extraBody : {}),
     }),
     signal: options?.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
   })
@@ -116,6 +128,7 @@ export async function chatCompletionStream(
       top_p: options?.top_p ?? 0.95,
       max_tokens: options?.max_tokens ?? 4096,
       stream: true,
+      ...(provider.extraBody ? provider.extraBody : {}),
     }),
   })
 
