@@ -45,7 +45,7 @@ describe('chatCompletion', () => {
 
     const { chatCompletion } = await import('@/lib/nvidia')
     await expect(chatCompletion([{ role: 'user', content: 'Hi' }])).rejects.toThrow(
-      'NVIDIA API error (401)'
+      'Nemotron API error (401)'
     )
   })
 
@@ -75,7 +75,7 @@ describe('chatCompletion', () => {
     )
 
     const callBody = JSON.parse(mockFetch.mock.calls[0][1].body)
-    expect(callBody.model).toBe('minimaxai/minimax-m2.7')
+    expect(callBody.model).toBe('nvidia/nemotron-3-ultra-550b-a55b')
     expect(callBody.temperature).toBe(0.7)
     expect(callBody.max_tokens).toBe(2048)
   })

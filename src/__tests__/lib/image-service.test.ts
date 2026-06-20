@@ -16,9 +16,9 @@ function mockQuery(returns: any) {
     eq: vi.fn(() => chain),
     order: vi.fn(() => chain),
   }
-  chain.select.mockReturnValue(chain)
-  chain.eq.mockReturnValue(chain)
-  chain.order.mockResolvedValue(returns)
+  // Make chain thenable so `await query` resolves to `returns`
+  // while still allowing `.eq()` chaining after `.order()`
+  chain.then = (resolve: any) => resolve(returns)
   return chain
 }
 

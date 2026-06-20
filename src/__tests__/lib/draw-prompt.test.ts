@@ -94,7 +94,7 @@ describe('buildSystemPrompt', () => {
   it('includes 【你的身體數據】 before 【重要生圖指令】', () => {
     const result = buildSystemPrompt(PERSONALITY, VISUAL_TEMPLATE, '年齡22歲，胸部中等，腰圍纖細，臀部適中、圓潤。')
     const bodyIdx = result.indexOf('【你的身體數據】')
-    const drawPromptIdx = result.indexOf('【重要生圖指令】')
+    const drawPromptIdx = result.indexOf('🔴 重要生圖指令')
     expect(bodyIdx).toBeGreaterThan(-1)
     expect(drawPromptIdx).toBeGreaterThan(-1)
     expect(bodyIdx).toBeLessThan(drawPromptIdx)
@@ -103,7 +103,7 @@ describe('buildSystemPrompt', () => {
   it('includes visual template inside DRAW_PROMPT examples', () => {
     const result = buildSystemPrompt(PERSONALITY, VISUAL_TEMPLATE)
     expect(result).toContain(`[DRAW_PROMPT: ${VISUAL_TEMPLATE}, <`)
-    expect(result).toContain(`[DRAW_PROMPT: ${VISUAL_TEMPLATE}, sitting`)
+    expect(result).toContain(`[DRAW_PROMPT: ${VISUAL_TEMPLATE}, relaxing`)
   })
 
   it('includes personality text', () => {
