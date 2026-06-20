@@ -34,6 +34,8 @@ export interface ChatMessage {
   image_url?: string
   /** Legacy: ID of a pending image record (pre-simplification). Kept for backward compat. */
   pending_image_id?: string
+  /** True when image generation was attempted but failed */
+  image_gen_failed?: boolean
   timestamp: string
 }
 
