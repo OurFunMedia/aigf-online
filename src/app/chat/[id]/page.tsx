@@ -31,6 +31,7 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [deletingTimestamp, setDeletingTimestamp] = useState<string | null>(null)
+  const [generatingImages, setGeneratingImages] = useState<Set<string>>(new Set)
   const inputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -76,7 +77,8 @@ export default function ChatPage() {
         setChatId(chatData?.id ?? null)
         const resolvedMessages: ChatMessage[] = chatData?.messages ?? []
 
-        // Resolve any old pending_image_id from pre-simplification messages
+        // Resolve any pending_image_id on page load
+        const pendingSet = new Set<string>()
         for (let i = 0; i < resolvedMessages.length; i++) {
           const msg = resolvedMessages[i]
           if (!msg.pending_image_id) continue
@@ -86,16 +88,20 @@ export default function ChatPage() {
           const allImages: any[] = await imgRes.json()
           const match = allImages.find(
             (img: any) =>
-              img.id === msg.pending_image_id &&
-              img.status === 'completed' &&
-              img.storage_url
+              img.id === msg.pending_image_id
           )
-          if (match) {
+          if (match?.status === 'completed' && match.storage_url) {
             resolvedMessages[i] = { ...msg, image_url: match.storage_url, pending_image_id: undefined }
+          } else if (match?.status === 'pending' || match?.status === 'processing') {
+            // Still in progress — show generating indicator
+            pendingSet.add(msg.timestamp)
+          } else if (match?.status === 'failed') {
+            resolvedMessages[i] = { ...msg, image_gen_failed: true, pending_image_id: undefined }
           }
         }
 
         setMessages(resolvedMessages)
+        setGeneratingImages(pendingSet)
       } catch (err) {
         console.error('Chat init error:', err)
       } finally {
@@ -105,7 +111,7 @@ export default function ChatPage() {
     init()
   }, [characterId, router])
 
-  // ── Send message (synchronous — awaits full pipeline) ──
+  // ── Send message (two-phase: text first, then image) ──
 
   async function handleSend() {
     const content = input.trim()
@@ -139,7 +145,7 @@ export default function ChatPage() {
       // Optimistic user message
       setMessages((prev) => [...prev, userMsg])
 
-      // Step 2: Call /api/chat — awaits NVIDIA + image gen synchronously
+      // Step 2: Call /api/chat — NVIDIA text only (no image gen)
       const genRes = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -166,27 +172,73 @@ export default function ChatPage() {
 
       const result = await genRes.json()
 
-      // Step 3: Add assistant message with any generated image
+      // Step 3: Show assistant text immediately
       const assistantMsg: ChatMessage = {
         role: 'assistant',
         content: result.text,
         timestamp: new Date().toISOString(),
       }
-      if (result.image_url) {
-        assistantMsg.image_url = result.image_url
+      if (result.pending_image_id) {
+        assistantMsg.pending_image_id = result.pending_image_id
       }
 
       setMessages((prev) => [...prev, assistantMsg])
+      setSending(false)
+
+      // Step 4: Generate image if needed (phase 2, non-blocking for UI)
+      if (result.pending_image_id && result.draw_prompt) {
+        setGeneratingImages((prev) => new Set(prev).add(assistantMsg.timestamp))
+
+        try {
+          const imgRes = await fetch('/api/images/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: savedChat.id,
+              pending_image_id: result.pending_image_id,
+              character_id: characterId,
+              draw_prompt: result.draw_prompt,
+            }),
+            signal: AbortSignal.timeout(150_000),
+          })
+
+          if (imgRes.ok) {
+            const imgResult = await imgRes.json()
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.timestamp === assistantMsg.timestamp
+                  ? { ...msg, image_url: imgResult.image_url, pending_image_id: undefined }
+                  : msg
+              )
+            )
+          } else {
+            throw new Error('generate failed')
+          }
+        } catch {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.timestamp === assistantMsg.timestamp
+                ? { ...msg, image_gen_failed: true, pending_image_id: undefined }
+                : msg
+            )
+          )
+        } finally {
+          setGeneratingImages((prev) => {
+            const next = new Set(prev)
+            next.delete(assistantMsg.timestamp)
+            return next
+          })
+        }
+      }
     } catch (err: any) {
       console.error('Send error:', err)
-      if (err.name === 'TimeoutError') {
+      if (err.name === 'TimeoutError' || err.name === 'AbortError') {
         setError('伺服器忙碌中（逾時），請稍後重試')
       } else {
         setError(err.message)
       }
       // Remove optimistically added user message
       setMessages((prev) => prev.filter((m) => m.timestamp !== userMsg.timestamp))
-    } finally {
       setSending(false)
     }
   }
@@ -332,6 +384,20 @@ export default function ChatPage() {
                       {msg.content}
                     </div>
 
+                    {/* Image generation progress / result */}
+                    {generatingImages.has(msg.timestamp) && !msg.image_url && !msg.image_gen_failed && (
+                      <div className="flex items-center gap-1.5 rounded-lg border border-amber-800/50 bg-amber-950/30 px-3 py-1.5 text-xs text-amber-400">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                        <span>生成圖片中...</span>
+                      </div>
+                    )}
+                    {msg.image_gen_failed && (
+                      <div className="flex items-center gap-1.5 rounded-lg border border-red-800/50 bg-red-950/30 px-3 py-1.5 text-xs text-red-400">
+                        <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+                        <span>生成圖片失敗</span>
+                      </div>
+                    )}
+
                     {/* Image attachment */}
                     {msg.image_url && (
                       <a
@@ -350,21 +416,21 @@ export default function ChatPage() {
                     )}
                   </div>
 
-                  {/* Delete button (user messages only) */}
-                  {msg.role === 'user' && (
-                    <button
-                      onClick={() => handleDelete(msg.timestamp)}
-                      disabled={deletingTimestamp === msg.timestamp}
-                      className={`mt-1 shrink-0 rounded-md p-1.5 text-zinc-500 transition-all hover:bg-zinc-700 hover:text-red-400 active:bg-red-700 active:text-white sm:opacity-0 sm:group-hover:opacity-100 order-first`}
-                      title="刪除此訊息"
-                    >
-                      {deletingTimestamp === msg.timestamp ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-4 w-4" />
-                      )}
-                    </button>
-                  )}
+                  {/* Delete button */}
+                  <button
+                    onClick={() => handleDelete(msg.timestamp)}
+                    disabled={deletingTimestamp === msg.timestamp}
+                    className={`mt-1 shrink-0 rounded-md p-1.5 text-zinc-500 transition-all hover:bg-zinc-700 hover:text-red-400 active:bg-red-700 active:text-white sm:opacity-0 sm:group-hover:opacity-100 ${
+                      msg.role === 'user' ? 'order-first' : 'order-last'
+                    }`}
+                    title="刪除此訊息"
+                  >
+                    {deletingTimestamp === msg.timestamp ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                  </button>
                 </div>
               </div>
             ))}
@@ -381,7 +447,7 @@ export default function ChatPage() {
                 </div>
                 <div className="flex items-center gap-2 rounded-2xl bg-zinc-800 px-4 py-2.5 text-sm text-zinc-400">
                   <Loader2 className="h-4 w-4 animate-spin text-pink-400" />
-                  正在生成...
+                  正在回覆...
                 </div>
               </div>
             )}
