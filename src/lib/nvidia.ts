@@ -45,7 +45,7 @@ const PROVIDERS: Record<string, ProviderConfig> = {
   },
 }
 
-const DEFAULT_PROVIDER = 'gemini'
+const DEFAULT_PROVIDER = 'nemotron'
 
 function getActiveProvider(): ProviderConfig {
   const choice = process.env.CHAT_PROVIDER ?? DEFAULT_PROVIDER
