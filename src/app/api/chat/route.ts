@@ -4,16 +4,17 @@ import { getSupabaseAdmin } from '@/lib/supabase-admin'
 import { chatCompletion, type NvidiaMessage } from '@/lib/nvidia'
 import { buildSystemPrompt, hasDrawPrompt, parseDrawPrompt, stripDrawPrompt, isPhotoRequest, buildFallbackDrawPrompt } from '@/lib/draw-prompt'
 import { createPendingImage } from '@/lib/storage'
-import { processPendingImageGeneration } from '@/lib/image-generator'
 
 /**
- * Synchronous chat + image generation.
+ * Phase 1: Chat text generation (non-blocking — no image gen).
  *
- * 1. Client saves user message via POST /api/chats (separate call)
- * 2. Client calls this endpoint — we await the FULL pipeline:
- *    NVIDIA → (if draw prompt) Agnes image gen → Storage upload
- * 3. Assistant message (with image_url if applicable) is saved to DB
- * 4. Return full result: { chat_id, text, image_url? }
+ * 1. Call NVIDIA for chat completion
+ * 2. Check for [DRAW_PROMPT:...] tag
+ * 3. If draw prompt exists, create a pending image record
+ * 4. Save assistant message (with pending_image_id if applicable)
+ * 5. Return text + draw_prompt + pending_image_id
+ *
+ * Client then calls POST /api/images/generate for the image.
  */
 
 export async function POST(request: Request) {
@@ -41,7 +42,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const result = await generateAndSaveResponse({
+    const result = await generateTextResponse({
       userId: user.id,
       characterId: character_id,
       chatId: chat_id,
@@ -54,7 +55,8 @@ export async function POST(request: Request) {
     return NextResponse.json({
       chat_id,
       text: result.text,
-      image_url: result.imageUrl ?? null,
+      draw_prompt: result.drawPrompt,
+      pending_image_id: result.pendingImageId,
     })
   } catch (error: any) {
     console.error(`Chat generation failed for ${chat_id}:`, error)
@@ -65,9 +67,9 @@ export async function POST(request: Request) {
   }
 }
 
-// ── Synchronous pipeline ────────────────────────────────────────────
+// ── Text-only pipeline ───────────────────────────────────────────────
 
-interface GenerateParams {
+interface GenerateTextParams {
   userId: string
   characterId: string
   chatId: string
@@ -77,12 +79,13 @@ interface GenerateParams {
   bodyDescription?: string
 }
 
-interface GenerateResult {
+interface GenerateTextResult {
   text: string
-  imageUrl?: string
+  drawPrompt: string | null
+  pendingImageId: string | null
 }
 
-async function generateAndSaveResponse(params: GenerateParams): Promise<GenerateResult> {
+async function generateTextResponse(params: GenerateTextParams): Promise<GenerateTextResult> {
   const { userId, characterId, chatId, messages, personalityPrompt, visualTemplate, bodyDescription } = params
 
   // Build system prompt
@@ -116,34 +119,12 @@ async function generateAndSaveResponse(params: GenerateParams): Promise<Generate
   }
 
   const cleanText = stripDrawPrompt(fullText)
-  let imageUrl: string | undefined
+  let pendingImageId: string | null = null
 
-  // Generate image synchronously if draw prompt was requested
+  // Create pending image record (but don't generate yet)
   if (drawPrompt) {
     const sceneDescription = drawPrompt.split(',').slice(0, 3).join(',').trim()
-
-    try {
-      const pendingImageId = await createPendingImage(
-        userId,
-        characterId,
-        drawPrompt,
-        sceneDescription
-      )
-
-      // Await the full image generation pipeline (Agnes + Storage)
-      const storageUrl = await processPendingImageGeneration(
-        pendingImageId,
-        characterId,
-        userId,
-        drawPrompt
-      )
-
-      if (storageUrl) {
-        imageUrl = storageUrl
-      }
-    } catch (imgErr) {
-      console.error(`Image generation failed for chat ${chatId}, continuing without image:`, imgErr)
-    }
+    pendingImageId = await createPendingImage(userId, characterId, drawPrompt, sceneDescription)
   }
 
   // Save assistant message to DB
@@ -163,8 +144,8 @@ async function generateAndSaveResponse(params: GenerateParams): Promise<Generate
     content: cleanText,
     timestamp: new Date().toISOString(),
   }
-  if (imageUrl) {
-    assistantMsg.image_url = imageUrl
+  if (pendingImageId) {
+    assistantMsg.pending_image_id = pendingImageId
   }
 
   await admin
@@ -172,7 +153,7 @@ async function generateAndSaveResponse(params: GenerateParams): Promise<Generate
     .update({ messages: [...(chat.messages ?? []), assistantMsg] })
     .eq('id', chatId)
 
-  console.log(`Chat gen complete for ${chatId}${imageUrl ? ' (with image)' : ''}`)
+  console.log(`Chat gen complete for ${chatId}${pendingImageId ? ' (pending image)' : ''}`)
 
-  return { text: cleanText, imageUrl }
+  return { text: cleanText, drawPrompt, pendingImageId }
 }
