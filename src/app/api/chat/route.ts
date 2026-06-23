@@ -5,6 +5,8 @@ import { chatCompletion, type NvidiaMessage } from '@/lib/nvidia'
 import { buildSystemPrompt, hasDrawPrompt, parseDrawPrompt, stripDrawPrompt } from '@/lib/draw-prompt'
 import { createPendingImage } from '@/lib/storage'
 import { processPendingImageGeneration } from '@/lib/image-generator'
+import { prepareRefImages } from '@/lib/prepare-ref-images'
+import { getCharacterAdmin } from '@/lib/services/character-service'
 
 /**
  * Async chat generation.
@@ -95,11 +97,28 @@ async function generateAndSaveResponse(params: GenerateParams): Promise<void> {
           drawPrompt,
           sceneDescription
         )
+
+        // Collect & pad reference images to 1024×1536 before generation
+        let paddedRefUrls: string[] | undefined
+        try {
+          const character = await getCharacterAdmin(characterId)
+          if (character) {
+            const raw: string[] = []
+            if (character.avatar_url) raw.push(character.avatar_url)
+            const outfitUrl = character.body_params?.outfit_ref_url
+            if (outfitUrl && typeof outfitUrl === 'string') raw.push(outfitUrl)
+            if (raw.length > 0) paddedRefUrls = await prepareRefImages(raw)
+          }
+        } catch (err) {
+          console.warn('Failed to prepare ref images, proceeding without padding:', err)
+        }
+
         processPendingImageGeneration(
           pendingImageId,
           characterId,
           userId,
-          drawPrompt
+          drawPrompt,
+          paddedRefUrls  // undefined → falls back to raw URLs in image-generator
         )
       }
     }

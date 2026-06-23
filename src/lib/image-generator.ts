@@ -48,12 +48,16 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
  * 4. Call Agnes AI to generate image (base64)
  * 5. Upload to Supabase Storage
  * 6. Update image record to 'completed' with the storage URL
+ *
+ * @param refImageUrls - Optional pre-padded reference image URLs. If omitted,
+ *                       raw character URLs are used (legacy/auto-recovery path).
  */
 export async function processPendingImageGeneration(
   imageId: string,
   characterId: string,
   userId: string,
-  drawPrompt: string
+  drawPrompt: string,
+  refImageUrls?: string[]
 ): Promise<void> {
   try {
     const cleanPrompt = sanitizePrompt(drawPrompt)
@@ -67,11 +71,17 @@ export async function processPendingImageGeneration(
       throw new Error(`Character not found: ${characterId}`)
     }
 
-    // Collect reference images
-    const refImages: string[] = []
-    if (character.avatar_url) refImages.push(character.avatar_url)
-    const outfitUrl = character.body_params?.outfit_ref_url
-    if (outfitUrl && typeof outfitUrl === 'string') refImages.push(outfitUrl)
+    // Collect reference images.
+    // If pre-padded URLs were provided (main flow), use those directly —
+    // otherwise fall back to raw character URLs (auto-recovery from instrumentation).
+    const refImages: string[] = refImageUrls?.length
+      ? [...refImageUrls]
+      : []
+    if (!refImages.length) {
+      if (character.avatar_url) refImages.push(character.avatar_url)
+      const outfitUrl = character.body_params?.outfit_ref_url
+      if (outfitUrl && typeof outfitUrl === 'string') refImages.push(outfitUrl)
+    }
 
     // Call Agnes AI (with retry for transient failures)
     const b64 = await withRetry(() =>
