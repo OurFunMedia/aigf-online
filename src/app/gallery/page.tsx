@@ -15,8 +15,7 @@ import {
 import { AppLayout } from '@/components/layout/AppLayout'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { createBrowserSupabaseClient } from '@/lib/supabase-client'
-import type { Image, Image as ImageRecord } from '@/types/database'
+import type { Image } from '@/types/database'
 
 export default function GalleryPage() {
   const router = useRouter()
@@ -48,36 +47,12 @@ export default function GalleryPage() {
     fetchImages(sortOrder)
   }, [sortOrder, fetchImages])
 
-  // Realtime: listen for newly completed images
+  // Re-fetch on focus to pick up newly completed images
   useEffect(() => {
-    const supabase = createBrowserSupabaseClient()
-    const channel = supabase
-      .channel('gallery-image-updates')
-      .on<ImageRecord>(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'images',
-          filter: `status=eq.completed`,
-        },
-        (payload) => {
-          const image = payload.new as ImageRecord
-          if (image.status === 'completed') {
-            // Check if already in list (avoid dupes)
-            setImages((prev) => {
-              if (prev.some((img) => img.id === image.id)) return prev
-              return [image, ...prev]
-            })
-          }
-        }
-      )
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
-  }, [])
+    function onFocus() { fetchImages(sortOrder) }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [sortOrder, fetchImages])
 
   const totalCount = images.length
 
@@ -228,10 +203,11 @@ export default function GalleryPage() {
                   onClick={() => setSelectedImage(img)}
                   className="block h-full w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-500/50"
                 >
-                  {img.storage_url ? (
+                  {(img.thumbnail_url ?? img.storage_url) ? (
                     <img
-                      src={img.storage_url}
+                      src={img.thumbnail_url ?? img.storage_url}
                       alt={img.prompt}
+                      loading="lazy"
                       className="h-full w-full object-cover transition-transform group-hover:scale-105"
                     />
                   ) : (

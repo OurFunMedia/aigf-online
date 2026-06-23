@@ -32,6 +32,7 @@ export async function updateImageStatus(
   status: ImageStatus,
   updates: {
     storage_url?: string
+    thumbnail_url?: string
     error_message?: string
   } = {}
 ): Promise<void> {
@@ -41,6 +42,7 @@ export async function updateImageStatus(
     .update({
       status,
       ...(updates.storage_url !== undefined && { storage_url: updates.storage_url }),
+      ...(updates.thumbnail_url !== undefined && { thumbnail_url: updates.thumbnail_url }),
       ...(updates.error_message !== undefined && { error_message: updates.error_message }),
     })
     .eq('id', imageId)
@@ -61,23 +63,35 @@ export async function downloadImage(tempUrl: string): Promise<ArrayBuffer> {
 export async function uploadToStorage(
   buffer: ArrayBuffer,
   userId: string,
-  characterId: string
+  characterId: string,
+  options?: {
+    /** Sub-path prefix, e.g. 'thumb' for thumbnail files */
+    prefix?: string
+    /** Content type (default: image/png) */
+    contentType?: string
+    /** Custom timestamp (default: auto-generated from now). Use to sync filenames across uploads. */
+    timestamp?: string
+  }
 ): Promise<string> {
   const supabase = getSupabaseAdmin()
-  const now = new Date()
-  const y = now.getFullYear()
-  const m = String(now.getMonth() + 1).padStart(2, '0')
-  const d = String(now.getDate()).padStart(2, '0')
-  const h = String(now.getHours()).padStart(2, '0')
-  const min = String(now.getMinutes()).padStart(2, '0')
-  const s = String(now.getSeconds()).padStart(2, '0')
-  const timestamp = `${y}${m}${d}-${h}${min}${s}`
-  const filePath = `${userId}/${characterId}/${timestamp}.png`
+  const timestamp = options?.timestamp ?? (() => {
+    const now = new Date()
+    const y = now.getFullYear()
+    const m = String(now.getMonth() + 1).padStart(2, '0')
+    const d = String(now.getDate()).padStart(2, '0')
+    const h = String(now.getHours()).padStart(2, '0')
+    const min = String(now.getMinutes()).padStart(2, '0')
+    const s = String(now.getSeconds()).padStart(2, '0')
+    return `${y}${m}${d}-${h}${min}${s}`
+  })()
+  const ext = options?.contentType === 'image/webp' ? 'webp' : 'png'
+  const prefix = options?.prefix ? `${options.prefix}/` : ''
+  const filePath = `${prefix}${userId}/${characterId}/${timestamp}.${ext}`
 
   const { error } = await supabase.storage
     .from('companion-photos')
     .upload(filePath, buffer, {
-      contentType: 'image/png',
+      contentType: options?.contentType ?? 'image/png',
       upsert: false,
     })
 

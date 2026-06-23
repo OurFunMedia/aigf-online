@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import {
   ArrowLeft,
@@ -15,11 +15,8 @@ import {
 import { AppLayout } from '@/components/layout/AppLayout'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { ScrollArea } from '@/components/ui/scroll-area'
-import { Skeleton } from '@/components/ui/skeleton'
-import { createBrowserSupabaseClient } from '@/lib/supabase-client'
 import { buildBodyDescription } from '@/lib/draw-prompt'
-import type { Character, Chat, ChatMessage, Image as ImageRecord } from '@/types/database'
+import type { Character, ChatMessage } from '@/types/database'
 
 export default function ChatPage() {
   const params = useParams()
@@ -27,16 +24,16 @@ export default function ChatPage() {
   const characterId = params.id as string
 
   const [character, setCharacter] = useState<Character | null>(null)
-  const [chat, setChat] = useState<Chat | null>(null)
+  const [chatId, setChatId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [deletingTimestamp, setDeletingTimestamp] = useState<string | null>(null)
+  const [generatingImages, setGeneratingImages] = useState<Set<string>>(new Set)
   const inputRef = useRef<HTMLInputElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Auto-focus input after sending completes
   useEffect(() => {
@@ -45,19 +42,12 @@ export default function ChatPage() {
     }
   }, [sending])
 
-  // Auto-scroll to bottom on new messages
+  // Auto-scroll to latest message
   useEffect(() => {
-    bottomRef.current?.scrollIntoView?.()
+    bottomRef.current?.scrollIntoView?.({ behavior: 'smooth' })
   }, [messages])
 
-  // Clean up poll on unmount
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-    }
-  }, [])
-
-  // Fetch character + existing chat on mount
+  // ── Fetch character + existing chat on mount ──
   useEffect(() => {
     async function init() {
       try {
@@ -75,72 +65,43 @@ export default function ChatPage() {
         }
 
         const characters: Character[] = await charRes.json()
-        const character = characters.find((c) => c.id === characterId) ?? null
-        setCharacter(character)
+        const c = characters.find((ch) => ch.id === characterId) ?? null
+        setCharacter(c)
 
-        if (!character) {
+        if (!c) {
           router.push('/')
           return
         }
 
         const chatData = await chatRes.json()
+        setChatId(chatData?.id ?? null)
         const resolvedMessages: ChatMessage[] = chatData?.messages ?? []
-        const supabase = createBrowserSupabaseClient()
 
-        // Get all completed images for this character (for both resolution paths)
-        const { data: characterImages } = await supabase
-          .from('images')
-          .select('id, status, storage_url, created_at')
-          .eq('character_id', characterId)
-          .eq('status', 'completed')
-          .order('created_at', { ascending: false })
-          .limit(20)
-
-        const completedImages = characterImages ?? []
-        const pendingImageMap = Object.fromEntries(
-          completedImages.map((img: any) => [img.id, img])
-        )
-
-        // Step 1: Resolve messages with pending_image_id
+        // Resolve any pending_image_id on page load
+        const pendingSet = new Set<string>()
         for (let i = 0; i < resolvedMessages.length; i++) {
           const msg = resolvedMessages[i]
           if (!msg.pending_image_id) continue
-          const img = pendingImageMap[msg.pending_image_id]
-          if (!img) continue
-          resolvedMessages[i] = {
-            ...msg,
-            image_url: img.storage_url || undefined,
-            pending_image_id: undefined,
+
+          const imgRes = await fetch(`/api/images?status=any`)
+          if (!imgRes.ok) continue
+          const allImages: any[] = await imgRes.json()
+          const match = allImages.find(
+            (img: any) =>
+              img.id === msg.pending_image_id
+          )
+          if (match?.status === 'completed' && match.storage_url) {
+            resolvedMessages[i] = { ...msg, image_url: match.storage_url, pending_image_id: undefined }
+          } else if (match?.status === 'pending' || match?.status === 'processing') {
+            // Still in progress — show generating indicator
+            pendingSet.add(msg.timestamp)
+          } else if (match?.status === 'failed') {
+            resolvedMessages[i] = { ...msg, image_gen_failed: true, pending_image_id: undefined }
           }
         }
 
-        // Step 2: Fallback — if the last assistant message still has no image,
-        // associate the most recent completed image (created after the message)
-        const usedImageIds = new Set(
-          resolvedMessages
-            .filter((m) => m.image_url)
-            .map((m) => m.image_url)
-        )
-        for (let i = resolvedMessages.length - 1; i >= 0; i--) {
-          const msg = resolvedMessages[i]
-          if (msg.role !== 'assistant') continue
-          if (msg.image_url) continue // already has an image
-
-          const msgTime = new Date(msg.timestamp).getTime()
-          const match = completedImages.find((img: any) => {
-            if (usedImageIds.has(img.storage_url)) return false
-            const imgTime = new Date(img.created_at).getTime()
-            return imgTime >= msgTime
-          })
-          if (match) {
-            resolvedMessages[i] = { ...msg, image_url: match.storage_url || undefined }
-            usedImageIds.add(match.storage_url)
-            break // only the most recent assistant message gets this treatment
-          }
-        }
-
-        setChat(chatData)
         setMessages(resolvedMessages)
+        setGeneratingImages(pendingSet)
       } catch (err) {
         console.error('Chat init error:', err)
       } finally {
@@ -150,50 +111,8 @@ export default function ChatPage() {
     init()
   }, [characterId, router])
 
-  // ── Supabase Realtime: listen for completed images ──
-  useEffect(() => {
-    if (!characterId) return
+  // ── Send message (two-phase: text first, then image) ──
 
-    const supabase = createBrowserSupabaseClient()
-
-    // Subscribe to changes on images table for this character
-    const channel = supabase
-      .channel('chat-image-updates')
-      .on<ImageRecord>(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'images',
-          filter: `character_id=eq.${characterId}`,
-        },
-        (payload) => {
-          const image = payload.new as ImageRecord
-          if (image.status === 'completed' || image.status === 'failed') {
-            // Find the message that has this pending_image_id and update it
-            setMessages((prev) =>
-              prev.map((msg) => {
-                if (msg.pending_image_id === image.id) {
-                  return {
-                    ...msg,
-                    image_url: image.storage_url || undefined,
-                    pending_image_id: image.status === 'completed' ? undefined : msg.pending_image_id,
-                  }
-                }
-                return msg
-              })
-            )
-          }
-        }
-      )
-      .subscribe()
-
-    return () => {
-      supabase.removeChannel(channel)
-    }
-  }, [characterId])
-
-  // ── Send message (async — client polls for result) ──
   async function handleSend() {
     const content = input.trim()
     if (!content || sending) return
@@ -202,30 +121,18 @@ export default function ChatPage() {
     setSending(true)
     setError(null)
 
-    // Clean up any existing poll
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-
-    // Optimistic user message
     const userMsg: ChatMessage = {
       role: 'user',
       content,
       timestamp: new Date().toISOString(),
     }
-    const assistantTs = new Date().toISOString()
-    setMessages((prev) => [...prev, userMsg])
 
     try {
-      // Step 1: Save user message
+      // Step 1: Save user message to DB
       const saveRes = await fetch('/api/chats', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          character_id: characterId,
-          content: userMsg.content,
-        }),
+        body: JSON.stringify({ character_id: characterId, content }),
       })
 
       if (!saveRes.ok) {
@@ -233,130 +140,111 @@ export default function ChatPage() {
         throw new Error(errData.error || `儲存失敗 (${saveRes.status})`)
       }
       const savedChat = await saveRes.json()
-      setChat(savedChat)
+      setChatId(savedChat.id)
 
-      // Step 2: Start chat generation (returns immediately)
+      // Optimistic user message
+      setMessages((prev) => [...prev, userMsg])
+
+      // Step 2: Call /api/chat — NVIDIA text only (no image gen)
       const genRes = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           character_id: characterId,
           chat_id: savedChat.id,
-          messages: messages.concat(userMsg).map((m) => ({
+          messages: [...messages, userMsg].map((m) => ({
             role: m.role,
             content: m.content,
           })),
           personality_prompt: character?.personality_prompt ?? '',
           visual_template: character?.visual_template ?? '',
-          body_description: character?.body_params ? buildBodyDescription(character.body_params) : undefined,
+          body_description: character?.body_params
+            ? buildBodyDescription(character.body_params)
+            : undefined,
         }),
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(120_000),
       })
 
       if (!genRes.ok) {
         const errData = await genRes.json()
-        // If it failed, still try polling (generation may have started in background)
-        console.warn('Chat generation start returned error:', errData)
+        throw new Error(errData.error || `生成失敗 (${genRes.status})`)
       }
 
-      // Show placeholder assistant message
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: '', timestamp: assistantTs } as ChatMessage,
-      ])
+      const result = await genRes.json()
 
-      // Step 3: Poll for result
-      const userTs = userMsg.timestamp
-      const maxPollTime = 60_000
-      const pollStart = Date.now()
-      let retriesLeft = 2
+      // Step 3: Show assistant text immediately
+      const assistantMsg: ChatMessage = {
+        role: 'assistant',
+        content: result.text,
+        timestamp: new Date().toISOString(),
+      }
+      if (result.pending_image_id) {
+        assistantMsg.pending_image_id = result.pending_image_id
+      }
 
-      pollRef.current = setInterval(async () => {
+      setMessages((prev) => [...prev, assistantMsg])
+      setSending(false)
+
+      // Step 4: Generate image if needed (phase 2, non-blocking for UI)
+      if (result.pending_image_id && result.draw_prompt) {
+        setGeneratingImages((prev) => new Set(prev).add(assistantMsg.timestamp))
+
         try {
-          const res = await fetch(`/api/chats?character_id=${characterId}`)
-          if (!res.ok) return
+          const imgRes = await fetch('/api/images/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: savedChat.id,
+              pending_image_id: result.pending_image_id,
+              character_id: characterId,
+              draw_prompt: result.draw_prompt,
+            }),
+            signal: AbortSignal.timeout(150_000),
+          })
 
-          const chatData = await res.json()
-          const allMsgs: ChatMessage[] = chatData?.messages ?? []
-
-          // Find assistant messages after our user message
-          const newMsgs = allMsgs.filter(
-            (m) => m.role === 'assistant' && m.timestamp > userTs && m.content
-          )
-
-          if (newMsgs.length > 0) {
-            // Found the response
-            const latest = newMsgs[newMsgs.length - 1]
-
-            if (pollRef.current) {
-              clearInterval(pollRef.current)
-              pollRef.current = null
-            }
-
-            setChat(chatData)
-            setMessages((prev) => {
-              const updated = [...prev]
-              const last = updated[updated.length - 1]
-              if (last.role === 'assistant' && last.timestamp === assistantTs) {
-                updated[updated.length - 1] = latest
-              }
-              return updated
-            })
-            setSending(false)
-            return
-          }
-
-          // Timeout check — retry generation before giving up
-          if (Date.now() - pollStart > maxPollTime) {
-            if (retriesLeft > 0) {
-              retriesLeft--
-              // Retry: call POST /api/chat again (warm instance might be faster)
-              try {
-                await fetch('/api/chat', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    character_id: characterId,
-                    chat_id: savedChat.id,
-                    messages: messages.concat(userMsg).map((m) => ({
-                      role: m.role,
-                      content: m.content,
-                    })),
-                    personality_prompt: character?.personality_prompt ?? '',
-                    visual_template: character?.visual_template ?? '',
-                    body_description: character?.body_params ? buildBodyDescription(character.body_params) : undefined,
-                  }),
-                  signal: AbortSignal.timeout(15_000),
-                })
-              } catch {
-                // retry failed, continue polling
-              }
-              return
-            }
-            if (pollRef.current) {
-              clearInterval(pollRef.current)
-              pollRef.current = null
-            }
-            setError('伺服器忙碌中，請稍後再試')
-            setMessages((prev) => prev.filter((m) => m !== userMsg && m.timestamp !== assistantTs))
-            setSending(false)
+          if (imgRes.ok) {
+            const imgResult = await imgRes.json()
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.timestamp === assistantMsg.timestamp
+                  ? { ...msg, image_url: imgResult.image_url, pending_image_id: undefined }
+                  : msg
+              )
+            )
+          } else {
+            throw new Error('generate failed')
           }
         } catch {
-          // Ignore poll errors — just retry
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.timestamp === assistantMsg.timestamp
+                ? { ...msg, image_gen_failed: true, pending_image_id: undefined }
+                : msg
+            )
+          )
+        } finally {
+          setGeneratingImages((prev) => {
+            const next = new Set(prev)
+            next.delete(assistantMsg.timestamp)
+            return next
+          })
         }
-      }, 2_000)
+      }
     } catch (err: any) {
       console.error('Send error:', err)
-      setError(err.name === 'TimeoutError' ? '伺服器忙碌中，請稍後再試' : err.message)
-      setMessages((prev) =>
-        prev.filter((m) => m !== userMsg)
-      )
+      if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+        setError('伺服器忙碌中（逾時），請稍後重試')
+      } else {
+        setError(err.message)
+      }
+      // Remove optimistically added user message
+      setMessages((prev) => prev.filter((m) => m.timestamp !== userMsg.timestamp))
       setSending(false)
     }
   }
 
   async function handleDelete(timestamp: string) {
-    if (!chat?.id || deletingTimestamp) return
+    if (!chatId || deletingTimestamp) return
     if (!window.confirm('確定刪除此訊息？')) return
 
     setDeletingTimestamp(timestamp)
@@ -367,7 +255,7 @@ export default function ChatPage() {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          chat_id: chat.id,
+          chat_id: chatId,
           delete_timestamp: timestamp,
         }),
       })
@@ -378,8 +266,7 @@ export default function ChatPage() {
       }
 
       const updatedChat = await res.json()
-      setChat(updatedChat)
-      setMessages(updatedChat.messages)
+      setMessages(updatedChat.messages ?? [])
     } catch (err: any) {
       console.error('Delete error:', err)
       setError(err.message)
@@ -395,7 +282,7 @@ export default function ChatPage() {
     }
   }
 
-  // Loading state
+  // ── Loading state ──
   if (loading) {
     return (
       <AppLayout>
@@ -406,10 +293,7 @@ export default function ChatPage() {
     )
   }
 
-  // Character not found
-  if (!character) {
-    return null
-  }
+  if (!character) return null
 
   return (
     <AppLayout>
@@ -432,9 +316,7 @@ export default function ChatPage() {
             )}
           </div>
           <div className="flex-1">
-            <h2 className="text-sm font-semibold text-white">
-              {character.name}
-            </h2>
+            <h2 className="text-sm font-semibold text-white">{character.name}</h2>
             <span className="flex items-center gap-1 text-xs text-zinc-500">
               <Sparkles className="h-3 w-3 text-amber-400" />
               AI 伴侶
@@ -451,8 +333,8 @@ export default function ChatPage() {
         </div>
 
         {/* Messages area */}
-        <ScrollArea className="min-h-0 flex-1 px-4 py-4">
-          {messages.length === 0 && (
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          {messages.length === 0 && !sending && (
             <div className="flex h-full flex-col items-center justify-center text-center">
               <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-zinc-800">
                 <Heart className="h-8 w-8 text-pink-400" />
@@ -502,7 +384,21 @@ export default function ChatPage() {
                       {msg.content}
                     </div>
 
-                    {/* Image attachment — completed */}
+                    {/* Image generation progress / result */}
+                    {generatingImages.has(msg.timestamp) && !msg.image_url && !msg.image_gen_failed && (
+                      <div className="flex items-center gap-1.5 rounded-lg border border-amber-800/50 bg-amber-950/30 px-3 py-1.5 text-xs text-amber-400">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                        <span>生成圖片中...</span>
+                      </div>
+                    )}
+                    {msg.image_gen_failed && (
+                      <div className="flex items-center gap-1.5 rounded-lg border border-red-800/50 bg-red-950/30 px-3 py-1.5 text-xs text-red-400">
+                        <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+                        <span>生成圖片失敗</span>
+                      </div>
+                    )}
+
+                    {/* Image attachment */}
                     {msg.image_url && (
                       <a
                         href={msg.image_url}
@@ -514,61 +410,50 @@ export default function ChatPage() {
                           src={msg.image_url}
                           alt="Generated photo"
                           className="w-full object-cover"
-                          onLoad={() => bottomRef.current?.scrollIntoView?.()}
-                          onError={() => bottomRef.current?.scrollIntoView?.()}
+                          onLoad={() => bottomRef.current?.scrollIntoView?.({ behavior: 'smooth' })}
                         />
                       </a>
-                    )}
-
-                    {/* Pending state — image being generated */}
-                    {msg.pending_image_id && !msg.image_url && (
-                      <div className="flex items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-800/50 px-4 py-3 text-xs text-zinc-400">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-pink-400" />
-                        <span>正在生成照片⋯</span>
-                      </div>
                     )}
                   </div>
 
                   {/* Delete button */}
-                  {chat?.id && (
-                    <button
-                      onClick={() => handleDelete(msg.timestamp)}
-                      disabled={deletingTimestamp === msg.timestamp}
-                      className={`mt-1 shrink-0 rounded-md p-1.5 text-zinc-500 transition-all hover:bg-zinc-700 hover:text-red-400 active:bg-red-700 active:text-white sm:opacity-0 sm:group-hover:opacity-100 ${msg.role === 'user' ? 'order-first' : ''}`}
-                      title="刪除此訊息"
-                    >
-                      {deletingTimestamp === msg.timestamp ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-4 w-4" />
-                      )}
-                    </button>
-                  )}
+                  <button
+                    onClick={() => handleDelete(msg.timestamp)}
+                    disabled={deletingTimestamp === msg.timestamp}
+                    className={`mt-1 shrink-0 rounded-md p-1.5 text-zinc-500 transition-all hover:bg-zinc-700 hover:text-red-400 active:bg-red-700 active:text-white sm:opacity-0 sm:group-hover:opacity-100 ${
+                      msg.role === 'user' ? 'order-first' : 'order-last'
+                    }`}
+                    title="刪除此訊息"
+                  >
+                    {deletingTimestamp === msg.timestamp ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-4 w-4" />
+                    )}
+                  </button>
                 </div>
               </div>
             ))}
 
+            {/* Sending indicator */}
             {sending && (
               <div className="flex gap-3">
                 <div className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-xs font-bold text-white">
-                {character.avatar_url ? (
-                  <img src={character.avatar_url} alt={character.name} className="h-full w-full object-cover" />
-                ) : (
-                  character.name.charAt(0).toUpperCase()
-                )}
-              </div>
-                <div className="flex items-center gap-1 rounded-2xl bg-zinc-800 px-4 py-2.5">
-                  <div className="flex gap-0.5">
-                    <span className="h-2 w-2 animate-bounce rounded-full bg-zinc-500 [animation-delay:0ms]" />
-                    <span className="h-2 w-2 animate-bounce rounded-full bg-zinc-500 [animation-delay:150ms]" />
-                    <span className="h-2 w-2 animate-bounce rounded-full bg-zinc-500 [animation-delay:300ms]" />
-                  </div>
+                  {character.avatar_url ? (
+                    <img src={character.avatar_url} alt={character.name} className="h-full w-full object-cover" />
+                  ) : (
+                    character.name.charAt(0).toUpperCase()
+                  )}
+                </div>
+                <div className="flex items-center gap-2 rounded-2xl bg-zinc-800 px-4 py-2.5 text-sm text-zinc-400">
+                  <Loader2 className="h-4 w-4 animate-spin text-pink-400" />
+                  正在回覆...
                 </div>
               </div>
             )}
             <div ref={bottomRef} />
           </div>
-        </ScrollArea>
+        </div>
 
         {/* Error display */}
         {error && (

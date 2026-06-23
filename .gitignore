@@ -38,6 +38,12 @@ yarn-error.log*
 
 # project specific
 .omo/evidence/
+.omo/run-continuation/
+
+# local dev & debugging
+.playwright-mcp/
+firebase-debug.log
+test-*.png
 
 # typescript
 *.tsbuildinfo

@@ -1,3 +1,4 @@
+import sharp from 'sharp'
 import { generateImage } from '@/lib/agnes'
 import { getCharacterAdmin } from '@/lib/services/character-service'
 import { uploadToStorage, updateImageStatus } from '@/lib/storage'
@@ -18,13 +19,15 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
     } catch (err: any) {
       if (attempt >= maxRetries) throw err
 
-      // Only retry on network errors or 5xx
+      // Only retry on network errors, timeouts, or 5xx
       const msg = String(err.message ?? '')
       const isTransient =
         msg.includes('fetch failed') ||
         msg.includes('ETIMEDOUT') ||
         msg.includes('ECONNREFUSED') ||
         msg.includes('ECONNRESET') ||
+        msg.includes('TimeoutError') ||
+        msg.includes('The operation was aborted') ||
         msg.includes('503') ||
         msg.includes('502') ||
         msg.includes('500')
@@ -52,13 +55,16 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
  * @param refImageUrls - Optional pre-padded reference image URLs. If omitted,
  *                       raw character URLs are used (legacy/auto-recovery path).
  */
+/**
+ * @returns The storage URL of the generated image, or throws on failure.
+ */
 export async function processPendingImageGeneration(
   imageId: string,
   characterId: string,
   userId: string,
   drawPrompt: string,
   refImageUrls?: string[]
-): Promise<void> {
+): Promise<string> {
   try {
     const cleanPrompt = sanitizePrompt(drawPrompt)
 
@@ -91,24 +97,62 @@ export async function processPendingImageGeneration(
       })
     )
 
-    // Upload to Supabase Storage
+    // Upload original to Supabase Storage
     const buf = Buffer.from(b64, 'base64')
+    // Generate once so thumbnail uses the exact same timestamp as original
+    const now = new Date()
+    const y = now.getFullYear()
+    const m = String(now.getMonth() + 1).padStart(2, '0')
+    const d = String(now.getDate()).padStart(2, '0')
+    const h = String(now.getHours()).padStart(2, '0')
+    const min = String(now.getMinutes()).padStart(2, '0')
+    const s = String(now.getSeconds()).padStart(2, '0')
+    const ts = `${y}${m}${d}-${h}${min}${s}`
+
     const storageUrl = await withRetry(() =>
       uploadToStorage(
         buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
         userId,
-        characterId
+        characterId,
+        { timestamp: ts }
       )
     )
 
+    // Generate + upload thumbnail (400px WebP, ~30-50 KB vs 2-5 MB original)
+    let thumbnailUrl: string | undefined
+    try {
+      const thumbBuf = await sharp(buf)
+        .resize(400, undefined, { fit: 'cover', withoutEnlargement: true })
+        .webp({ quality: 80 })
+        .toBuffer()
+
+      // Create a fresh copy so ArrayBuffer is clean (sharp's internal pool may have non-zero byteOffset)
+      const thumbCopy = Buffer.from(thumbBuf)
+      const thumbArrayBuf = thumbCopy.buffer.slice(thumbCopy.byteOffset, thumbCopy.byteOffset + thumbCopy.byteLength) as ArrayBuffer
+      thumbnailUrl = await withRetry(() =>
+        uploadToStorage(
+          thumbArrayBuf,
+          userId,
+          characterId,
+          { prefix: 'thumb', contentType: 'image/webp', timestamp: ts }
+        )
+      )
+    } catch (thumbErr) {
+      console.warn(`Thumbnail generation failed for ${imageId}, continuing without:`, thumbErr)
+    }
+
     // Mark as completed
     await withRetry(() =>
-      updateImageStatus(imageId, 'completed', { storage_url: storageUrl })
+      updateImageStatus(imageId, 'completed', {
+        storage_url: storageUrl,
+        ...(thumbnailUrl && { thumbnail_url: thumbnailUrl }),
+      })
     )
+
+    return storageUrl
   } catch (error: any) {
-    console.error(`Background image generation failed for ${imageId}:`, error)
-    // Best-effort: mark as failed. If this fails too, the image stays processing/pending
-    // and will be picked up by the batch retry endpoint.
+    console.error(`Image generation failed for ${imageId}:`, error)
+    // Best-effort: mark as failed
     try {
       await updateImageStatus(imageId, 'failed', {
         error_message: error.message || 'Unknown error during image generation',
@@ -116,5 +160,7 @@ export async function processPendingImageGeneration(
     } catch (innerErr) {
       console.error(`FATAL: could not update image ${imageId} to failed:`, innerErr)
     }
+    // Return empty string so caller knows image gen failed
+    return ''
   }
 }

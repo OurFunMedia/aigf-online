@@ -48,6 +48,7 @@ export async function generateImage(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(90_000),
   })
 
   if (!response.ok) {
@@ -64,10 +65,11 @@ export async function generateImage(
     // Fetch the URL and return as base64 buffer
     const imgRes = await fetch(img.url, {
       headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(90_000),
     })
     if (!imgRes.ok) {
       // Try without auth header (public URL)
-      const retry = await fetch(img.url)
+      const retry = await fetch(img.url, { signal: AbortSignal.timeout(90_000) })
       if (!retry.ok) {
         throw new Error(`Failed to fetch generated image (${imgRes.status}, retry ${retry.status}): URL may be invalid or expired`)
       }

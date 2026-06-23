@@ -8,8 +8,10 @@ import { processPendingImageGeneration } from '@/lib/image-generator'
  * Retry ALL images with status 'pending' or 'failed'.
  * Resets stuck 'processing' images back to 'pending' first.
  *
- * This is safe to call repeatedly — images that succeed on a previous
- * call will already be 'completed' and won't match.
+ * Awaits all generations in parallel so CPU stays allocated on
+ * serverless platforms (Cloud Run, Vercel) for the full duration.
+ *
+ * Safe to call repeatedly — completed images are simply skipped.
  */
 export async function POST() {
   const supabase = getSupabaseAdmin()
@@ -28,7 +30,7 @@ export async function POST() {
     // 2. Fetch all pending + failed images
     const { data: images, error: fetchError } = await supabase
       .from('images')
-      .select('id, user_id, character_id, prompt, status')
+      .select('id, user_id, character_id, prompt')
       .or('status.eq.pending,status.eq.failed')
       .limit(20)
 
@@ -40,18 +42,13 @@ export async function POST() {
       return NextResponse.json({ retried: 0, message: 'No images to retry' })
     }
 
-    // 3. Fire background processing for each (non-blocking)
+    // 3. Await all generations in parallel so CPU stays allocated.
+    //    processPendingImageGeneration handles errors internally and
+    //    updates the DB status to 'failed' on error.
     const results = await Promise.allSettled(
-      images.map((img) => {
-        // Reset to pending before retry
-        return supabase
-          .from('images')
-          .update({ status: 'pending', error_message: null })
-          .eq('id', img.id)
-          .then(() => {
-            processPendingImageGeneration(img.id, img.character_id, img.user_id, img.prompt)
-          })
-      })
+      images.map((img) =>
+        processPendingImageGeneration(img.id, img.character_id, img.user_id, img.prompt)
+      )
     )
 
     const succeeded = results.filter((r) => r.status === 'fulfilled').length

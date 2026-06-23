@@ -12,9 +12,14 @@ export async function GET(request: NextRequest) {
 
   const url = new URL(request.url)
   const sort = url.searchParams.get('sort') ?? 'desc'
+  const statusFilter = url.searchParams.get('status') ?? 'completed'
 
   try {
-    const images = await getImages(user.id, sort === 'asc' ? 'asc' : 'desc')
+    const images = await getImages(
+      user.id,
+      sort === 'asc' ? 'asc' : 'desc',
+      statusFilter === 'any' ? 'any' : 'completed'
+    )
     return NextResponse.json(images)
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 })

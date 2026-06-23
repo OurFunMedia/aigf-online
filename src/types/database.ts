@@ -30,9 +30,12 @@ export interface Character {
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  /** URL of a generated image attached to this message */
   image_url?: string
-  /** ID of the pending image record, set when generation is in progress */
+  /** Legacy: ID of a pending image record (pre-simplification). Kept for backward compat. */
   pending_image_id?: string
+  /** True when image generation was attempted but failed */
+  image_gen_failed?: boolean
   timestamp: string
 }
 
@@ -52,6 +55,8 @@ export interface Image {
   user_id: string
   prompt: string
   storage_url: string
+  /** WebP thumbnail (400px) for gallery grid — null for legacy records */
+  thumbnail_url: string | null
   scene_description: string | null
   status: ImageStatus
   error_message: string | null

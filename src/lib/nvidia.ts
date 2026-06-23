@@ -1,5 +1,58 @@
-const NVIDIA_API_BASE = 'https://integrate.api.nvidia.com/v1'
-const MODEL = 'minimaxai/minimax-m2.7'
+// ── Chat provider configuration ────────────────────────────────────
+
+interface ProviderConfig {
+  name: string
+  baseUrl: string
+  model: string
+  apiKeyEnvVar: string
+  extraBody?: Record<string, unknown>
+}
+
+const PROVIDERS: Record<string, ProviderConfig> = {
+  nvidia: {
+    name: 'NVIDIA',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    model: 'minimaxai/minimax-m2.7',
+    apiKeyEnvVar: 'NVIDIA_API_KEY',
+  },
+  nemotron: {
+    name: 'Nemotron',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    model: 'nvidia/nemotron-3-ultra-550b-a55b',
+    apiKeyEnvVar: 'NVIDIA_API_KEY',
+    extraBody: {
+      chat_template_kwargs: { enable_thinking: true },
+      reasoning_budget: 16384,
+    },
+  },
+  agnes: {
+    name: 'Agnes',
+    baseUrl: 'https://apihub.agnes-ai.com/v1',
+    model: 'agnes-2.0-flash',
+    apiKeyEnvVar: 'AGNES_API_KEY',
+  },
+  openrouter: {
+    name: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'google/gemma-4-31b-it:free',
+    apiKeyEnvVar: 'OPENROUTER_API_KEY',
+  },
+  gemini: {
+    name: 'Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+    model: 'gemini-2.0-flash',
+    apiKeyEnvVar: 'GEMINI_API_KEY',
+  },
+}
+
+const DEFAULT_PROVIDER = 'nemotron'
+
+function getActiveProvider(): ProviderConfig {
+  const choice = process.env.CHAT_PROVIDER ?? DEFAULT_PROVIDER
+  return PROVIDERS[choice] ?? PROVIDERS[DEFAULT_PROVIDER]
+}
+
+// ── Shared types ───────────────────────────────────────────────────
 
 export interface NvidiaMessage {
   role: 'system' | 'user' | 'assistant'
@@ -16,31 +69,33 @@ export async function chatCompletion(
     timeoutMs?: number       // AbortSignal timeout for the fetch call
   }
 ): Promise<string> {
-  const apiKey = process.env.NVIDIA_API_KEY
+  const provider = getActiveProvider()
+  const apiKey = process.env[provider.apiKeyEnvVar]
   if (!apiKey) {
-    throw new Error('NVIDIA_API_KEY not configured')
+    throw new Error(`${provider.apiKeyEnvVar} not configured`)
   }
 
-  const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: MODEL,
+      model: provider.model,
       messages,
       temperature: options?.temperature ?? 0.7,
       top_p: options?.top_p ?? 0.95,
       max_tokens: options?.max_tokens ?? 4096,
       stream: false,
+      ...(provider.extraBody ? provider.extraBody : {}),
     }),
     signal: options?.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
   })
 
   if (!response.ok) {
     const text = await response.text()
-    throw new Error(`NVIDIA API error (${response.status}): ${text}`)
+    throw new Error(`${provider.name} API error (${response.status}): ${text}`)
   }
 
   const data = await response.json()
@@ -60,30 +115,32 @@ export async function chatCompletionStream(
     max_tokens?: number
   }
 ): Promise<ReadableStream<Uint8Array>> {
-  const apiKey = process.env.NVIDIA_API_KEY
+  const provider = getActiveProvider()
+  const apiKey = process.env[provider.apiKeyEnvVar]
   if (!apiKey) {
-    throw new Error('NVIDIA_API_KEY not configured')
+    throw new Error(`${provider.apiKeyEnvVar} not configured`)
   }
 
-  const response = await fetch(`${NVIDIA_API_BASE}/chat/completions`, {
+  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
-      model: MODEL,
+      model: provider.model,
       messages,
       temperature: options?.temperature ?? 0.7,
       top_p: options?.top_p ?? 0.95,
       max_tokens: options?.max_tokens ?? 4096,
       stream: true,
+      ...(provider.extraBody ? provider.extraBody : {}),
     }),
   })
 
   if (!response.ok) {
     const text = await response.text()
-    throw new Error(`NVIDIA API error (${response.status}): ${text}`)
+    throw new Error(`${provider.name} API error (${response.status}): ${text}`)
   }
 
   const encoder = new TextEncoder()
